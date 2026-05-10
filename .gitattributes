@@ -1,0 +1,12 @@
+# Mark vendored / generated content so GitHub Linguist excludes it
+# from language stats and diffs. https://github.com/github-linguist/linguist
+
+# Vendored Microsoft Azure docs and examples shipped as a skill
+skills/azure-skills/** linguist-vendored
+
+# 3D office app assets and tests are generated/scaffolded
+session-browser/claw3d/tests/** linguist-generated
+session-browser/claw3d/.next/** linguist-generated
+
+# Markdown is the primary "source" of this repo (rules, commands, skills, agents)
+*.md linguist-detectable=true

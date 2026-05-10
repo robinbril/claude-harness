@@ -29,6 +29,9 @@ dist/
 build/
 .next/
 .cache/
+target/
+*.rlib
+*.rmeta
 
 # Coverage
 coverage/
