@@ -24,9 +24,7 @@ When the user types `/improve`, run this pipeline fully autonomously. Do not ask
 ## Step 1: Detect project
 
 Detect current project from CWD:
-- Contains `demo.ville` → project: demo-ville, rules: `<demo.ville>/.claude/rules/`, qmd: demo-ville
-- Contains `hiveai.core` → project: hive-core, rules: `<hiveai.core>/.claude/rules/`, qmd: hive-core
-- Contains `apiary` → project: hive-apiary, rules: `<apiary>/.claude/rules/`, qmd: hive-apiary
+- Try to match the CWD against known project keys configured by the user (e.g. via `IMPROVE_PROJECT_MAP` env or a local config). Each key maps to project rules under `<project>/.claude/rules/` and a qmd index name.
 - Otherwise → global, rules: `~/.claude/rules/common/`, qmd: claude-rules
 
 ---

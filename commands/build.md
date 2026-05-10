@@ -193,9 +193,9 @@ Ask the user (skip answered):
 ### 3. Repo Scan
 
 ```bash
-ls fellowmind.hiveai.demo.ville/agents/
-ls fellowmind.hiveai.demo.ville/plugins/
-ls fellowmind.hiveai.demo.ville/tools/
+ls your-project/agents/
+ls your-project/plugins/
+ls your-project/tools/
 ```
 
 Reuse existing MCP servers where possible. Only build NEW ones for missing integrations.
@@ -216,7 +216,7 @@ Agent: [name]
 **Agent YAML** (`agents/[name].yaml`):
 ```yaml
 kind: Agent
-apiVersion: hive.fellowmind.io/v1alpha1
+apiVersion: agents.example.com/v1alpha1
 metadata:
   name: [name]
 spec:
@@ -253,7 +253,7 @@ spec:
 **Plugin YAMLs** (only new):
 ```yaml
 kind: Plugin
-apiVersion: hive.fellowmind.io/v1alpha1
+apiVersion: agents.example.com/v1alpha1
 metadata:
   name: [name]
 spec:
