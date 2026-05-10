@@ -1,0 +1,197 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash",
+      "Read",
+      "Edit",
+      "Write",
+      "Glob",
+      "Grep",
+      "mcp__context7__*",
+      "mcp__microsoft-learn__*",
+      "mcp__claude_ai_Google_Calendar__*",
+      "mcp__claude_ai_Gmail__*",
+      "mcp__agentmemory__*"
+    ],
+    "deny": [
+      "Bash(git reset --hard*)",
+      "Bash(git checkout -- *)",
+      "Bash(git clean*)",
+      "Bash(rm -rf *)",
+      "Bash(gh pr create*)",
+      "Bash(gh issue create*)"
+    ],
+    "defaultMode": "auto"
+  },
+  "model": "claude-opus-4-6",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"{{HOME}}/.claude/scripts/session-recall.js\"",
+            "timeout": 5000
+          },
+          {
+            "type": "command",
+            "command": "node \"{{HOME}}/.claude/scripts/save-account-info.js\"",
+            "timeout": 5000
+          },
+          {
+            "type": "command",
+            "command": "node \"{{NPM_GLOBAL}}/@agentmemory/agentmemory/dist/hooks/session-start.mjs\"",
+            "timeout": 5000
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"{{HOME}}/.claude/scripts/session-learn.js\"",
+            "timeout": 120000,
+            "async": true
+          },
+          {
+            "type": "command",
+            "command": "node \"{{NPM_GLOBAL}}/@agentmemory/agentmemory/dist/hooks/session-end.mjs\"",
+            "timeout": 10000,
+            "async": true
+          }
+        ]
+      },
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash {{HOME}}/.claude-code-project-index/scripts/run_python.sh {{HOME}}/.claude-code-project-index/scripts/auto_log.py",
+            "timeout": 5000
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash {{HOME}}/.claude-code-project-index/scripts/run_python.sh {{HOME}}/.claude-code-project-index/scripts/i_flag_hook.py",
+            "timeout": 20
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash {{HOME}}/.claude-code-project-index/scripts/run_python.sh {{HOME}}/.claude-code-project-index/scripts/periodic_reindex.py",
+            "timeout": 20
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell -NoProfile -ExecutionPolicy Bypass -File \"{{HOME}}/.claude/scripts/precompact-preserve.ps1\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell -NoProfile -ExecutionPolicy Bypass -File \"{{HOME}}/.claude/scripts/guard-git-push.ps1\"",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell -NoProfile -ExecutionPolicy Bypass -File \"{{HOME}}/.claude/scripts/verify-aca-deploy.ps1\"",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell -NoProfile -ExecutionPolicy Bypass -File \"{{HOME}}/.claude/scripts/notify-stop.ps1\"",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "node \"{{NPM_GLOBAL}}/@agentmemory/agentmemory/dist/hooks/stop.mjs\"",
+            "timeout": 15000,
+            "async": true
+          }
+        ]
+      }
+    ]
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "bash -c 'plugin_dir=$(ls -d \"${CLAUDE_CONFIG_DIR:-$HOME/.claude}\"/plugins/cache/claude-hud/claude-hud/*/ 2>/dev/null | awk -F/ '\"'\"'{ print $(NF-1) \"\\t\" $(0) }'\"'\"' | sort -t. -k1,1n -k2,2n -k3,3n -k4,4n | tail -1 | cut -f2-); exec \"/c/Program Files/nodejs/node\" \"${plugin_dir}dist/index.js\"'"
+  },
+  "enabledPlugins": {
+    "everything-claude-code@everything-claude-code": true,
+    "claude-hud@claude-hud": true
+  },
+  "extraKnownMarketplaces": {
+    "everything-claude-code": {
+      "source": {
+        "source": "github",
+        "repo": "affaan-m/everything-claude-code"
+      }
+    },
+    "claude-hud": {
+      "source": {
+        "source": "github",
+        "repo": "jarrodwatts/claude-hud"
+      }
+    }
+  },
+  "sandbox": {
+    "enabled": false
+  },
+  "effortLevel": "high",
+  "autoUpdatesChannel": "latest",
+  "voice": {
+    "enabled": true,
+    "mode": "hold"
+  },
+  "skipDangerousModePermissionPrompt": true,
+  "skipAutoPermissionPrompt": true,
+  "autoMode": {
+    "environment": [
+      "Organization: <your org>",
+      "Cloud: <e.g. Azure / AWS / GCP>",
+      "Source control: <your git provider>",
+      "Services: <main services or APIs you integrate with>",
+      "Local dev: <ports and processes you typically run>"
+    ]
+  },
+  "theme": "dark-daltonized"
+}

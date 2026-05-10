@@ -1,0 +1,1084 @@
+AGENTIC DEVELOPMENT HARNESS — COMPLETE CONTEXT
+===============================================
+System: Claude Code + custom harness layer
+
+
+================================================================================
+1. PROJECT OVERVIEW
+================================================================================
+
+The Agentic Development Harness wraps Claude Code in persistent rules, memory,
+specialized agents, automated hooks, and a self-improving learning pipeline.
+The purpose is to make Claude Code behave consistently across sessions,
+accumulate institutional knowledge, and expose visibility into what is happening
+via a browser-based dashboard.
+
+The system has 5 layers:
+
+  Layer 1 — Rules & Memory
+    Plain markdown files loaded by Claude Code from ~/.claude/rules/ and
+    ~/.claude/projects/<slug>/memory/. Rules constrain every session's behavior.
+    Memory files give Claude project-specific context. Rules are organized into
+    common/ (always active), python/ (Python overrides), and typescript/ (TS
+    overrides). Memory files have YAML frontmatter (name, description, type).
+
+  Layer 2 — Skills & Commands
+    Slash commands (/work, /ship, /recall, /dream, etc.) orchestrate multi-step
+    workflows. Skills are triggered automatically when Claude detects a match
+    with the skill's description, or invoked explicitly. Skills live in
+    ~/.claude/skills/<name>/SKILL.md.
+
+  Layer 3 — Agent Orchestration
+    37 specialized subagent definitions in ~/.claude/agents/. Agents are spawned
+    via Claude Code's Agent tool. The harness defines when to spawn each agent
+    automatically (in agents.md) and how they communicate via handoff files.
+
+  Layer 4 — Hooks & Automation
+    13 lifecycle hooks across 7 event types (SessionStart, SessionEnd,
+    UserPromptSubmit, PreCompact, PreToolUse, PostToolUse, Stop). Hooks enforce
+    invariants, trigger learning, send notifications, and guard destructive
+    operations.
+
+  Layer 5 — Continuous Improvement
+    session-learn.js runs at SessionEnd: it converts the transcript to markdown,
+    semantically queries the QMD index for corrections and reasoning, calls
+    GPT-4o twice (propose + validate), and writes approved entries to
+    lessons-learned.md. The /improve command is the interactive version.
+    /dream consolidates weekly logs into structured memory files and syncs to
+    agentmemory.
+
+Root config directory: ~/.claude/
+Export package:        the cloned/extracted claude-harness directory
+
+
+================================================================================
+2. MISSION CONTROL (3D SESSION BROWSER)
+================================================================================
+
+Mission Control is a Three.js WebGL 3D office environment served at
+localhost:7337. It visualizes Claude Code sessions as desk workers in a virtual
+office. The primary entry point is a single HTML file: app.html (~8141 lines)
+with embedded CSS, Three.js, and JSX compiled in-browser by Babel standalone.
+
+Location:
+  Server:   ~/.claude/scripts/session-browser/server.mjs
+  Frontend: ~/.claude/scripts/session-browser/app.html
+
+Start command:
+  node ~/.claude/scripts/session-browser/server.mjs
+  Then open: http://localhost:7337
+
+Port configuration:
+  Default port 7337, overridable with SB_PORT env var.
+  If the port is already in use, it opens the browser to the existing instance
+  rather than failing.
+
+Frontend dependencies (loaded from CDN at runtime):
+  - React 18 (react.production.min.js, react-dom.production.min.js)
+  - Babel standalone (for in-browser JSX compilation)
+  - Three.js r160 (both UMD and ESM via importmap)
+  - OrbitControls from Three.js addons
+  - Recharts 2.15.3 (analytics charts)
+  - PropTypes 15
+  - Fonts: Inter + IBM Plex Mono from Google Fonts
+
+3D Environment (Three.js):
+  - Office scene with desk workers represented as 3D robots
+  - Server rack objects (datacenters) that can be clicked
+  - Companion pet that wanders the scene
+  - Speech bubbles above workers showing current tool/activity
+  - HUD board rendered as CanvasTexture on a 3D plane
+  - Three.js Raycaster for click detection on rack meshes
+  - Three.js Group objects wrap rack geometry for reliable raycasting
+  - WASD keys for camera movement (WASD_SPEED = 0.12 units)
+  - Arrow keys also supported for navigation
+
+Features built across sessions:
+
+  Anonymous / Blur Mode (F2)
+    Toggled with F2 key. Adds class "anon" to document.documentElement.
+    CSS rule: .anon .anon-blur { filter: blur(5px) }
+    A pulsing red badge appears at top center: "ANON MODE"
+    Canvas text in the 3D scene replaced with block characters when anon is on:
+      const _anon = document.documentElement.classList.contains('anon')
+      const proj = _anon ? '█'.repeat(8) : (w.projectName || 'Unknown')
+    CanvasTexture nodes for the HUD board, monitor, and sign also respect anon
+    mode. CSS blur cannot reach WebGL canvas content, so the text replacement
+    approach ensures full redaction.
+
+  Multi-terminal Grid (M key)
+    Pressing M activates a 2x2 grid layout showing 4 TerminalView components
+    simultaneously. Each cell is a full TerminalView with live SSE streaming.
+
+  TerminalView Component (around line 2160 in app.html)
+    Shows a single Claude Code session in a terminal emulator style panel.
+    Draggable title (anon-blur applied), project subtitle, and real-time output
+    via SSE. Supports sending new prompts to the terminal. Terminal state tracked
+    in terminal-manager.mjs on the backend.
+
+  Manager Companion
+    Originally called "Middle Manager", renamed to companion pet.
+    A robot that wanders the 3D office, built with the companion-api module.
+    15 possible species: duck, goose, cat, dragon, octopus, owl, penguin,
+    turtle, axolotl, capybara, robot, lobster, crab, fox, raccoon.
+    5 rarities: common (60%), uncommon (25%), rare (10%), epic (4%), legendary (1%).
+    Stats: debugging, patience, chaos, wisdom, snark (1-10 each).
+    5% chance of shiny. Deterministic roll from seed (FNV1a hash + mulberry32).
+
+  Smart Suggestions Panel
+    Analyzes recent session JSONL files (tail 8KB) and active git state.
+    Surfaces up to 3 contextual suggestions: uncommitted changes, build errors,
+    tests not run. Each suggestion links to a specific agent (code-reviewer,
+    build-error-resolver, tdd-guide). Cache TTL 30 seconds.
+
+  Settings Menu
+    Display controls, autonomy settings, sound controls. Persisted via
+    localStorage through the useDraggablePanel hook.
+
+  Worker Activity Tracking
+    worker-activity-api.mjs reads the last 8KB of each active session's JSONL.
+    Extracts recent tool_use blocks. Derives status: active if last tool < 120s
+    ago, error if last tool was an error type. Cache TTL 3 seconds.
+
+  Draggable/Resizable Panels
+    useDraggablePanel(key, defaults) hook manages position and size for each
+    panel (feed, term, wap, rack, hud, guide, sys). State persisted to
+    localStorage under each key.
+
+  Cross-component Events
+    CustomEvent('mc-nav', { detail: { tab, ...detail } }) dispatched on window.
+    Components listen for 'mc-nav' to navigate to specific tabs.
+    CustomEvent('mc-anon-toggle') for anonymous mode state sync.
+
+  Live SSE Terminal Connections
+    terminal-manager.mjs spawns Claude CLI subprocesses via:
+      spawn('claude', ['-p', message, '--output-format', 'json',
+                       '--dangerously-skip-permissions', ...])
+    JSON output format parses session_id, result, total_cost_usd, num_turns.
+    Output ring buffer: 500 chunks max (oldest evicted).
+    SSE endpoint streams chunks as they arrive.
+
+  HUD Board
+    Real-time session data rendered as CanvasTexture on a 3D plane in the scene.
+    Shows active sessions, costs, tool counts, model in use.
+
+  Relationship Graph
+    relationship-index-api.mjs builds an in-memory index from all session JSONL
+    files: sessions by agent, sessions by skill, sessions by project, agents by
+    project, skills by project. Cache TTL 60 seconds.
+
+  Navigation Tabs (top bar):
+    Sessions, 3D View, Agents & Skills, Logs, Docs, Projects, System, Team Sync
+
+  Clickable Datacenters (server racks)
+    Clicking a rack in the 3D scene opens a system health preview panel.
+    Raycasting detects hits on the rack's THREE.Group object children.
+
+  Guide overlay (keyboard shortcuts):
+    "WASD move | M multi-term | B break | G dream | R skills | F2 anon | ESC close"
+
+
+================================================================================
+3. AGENTMEMORY INTEGRATION
+================================================================================
+
+Package:   @agentmemory/agentmemory v0.9.4 (installed globally via npm)
+MCP pkg:   @agentmemory/mcp
+Server:    localhost:3111
+Backend:   iii-engine (Docker-based vector memory server)
+Search:    BM25 hybrid search + vector search + knowledge graph traversal
+           BM25 works without an external embedding API key.
+
+Configuration in ~/.claude/.mcp.json:
+  {
+    "mcpServers": {
+      "agentmemory": {
+        "command": "npx",
+        "args": ["-y", "@agentmemory/mcp"],
+        "env": {
+          "AGENTMEMORY_URL": "http://localhost:3111",
+          "AGENTMEMORY_TOOLS": "all"
+        }
+      }
+    }
+  }
+
+Start command:
+  agentmemory --tools all
+
+Memory migration:
+  Migrate local markdown memories into agentmemory using
+  ~/.claude/scripts/migrate-to-agentmemory.mjs
+  ~/.claude/scripts/migrate-memories.mjs
+
+Hooks added for agentmemory:
+  SessionStart: node .../agentmemory/dist/hooks/session-start.mjs  (5s)
+  SessionEnd:   node .../agentmemory/dist/hooks/session-end.mjs    (10s async)
+  Stop:         node .../agentmemory/dist/hooks/stop.mjs           (15s async)
+
+Hook scripts installed at:
+  <npm global modules>/@agentmemory/agentmemory/dist/hooks/
+
+MCP tools exposed (with AGENTMEMORY_TOOLS=all):
+  memory_save, memory_recall, memory_smart_search, memory_consolidate, and others.
+
+/recall command:
+  Location: ~/.claude/commands/recall.md
+  Uses memory_smart_search MCP tool (hybrid BM25 + vector + graph traversal).
+  If agentmemory is not running, falls back to local memory files.
+
+/dream integration:
+  After consolidating local memory files, /dream syncs to agentmemory:
+    POST /agentmemory/remember with content, type, concepts, metadata.
+    Then runs memory_consolidate via MCP for 4-tier consolidation pipeline.
+
+/index integration:
+  After generating PROJECT_INDEX.json, stores architecture summary in agentmemory
+  via memory_save so future sessions in any directory can recall the structure.
+
+Environment variables (agentmemory-env.example):
+  AGENTMEMORY_TOOLS         - which MCP tools to expose (all or specific)
+  AGENTMEMORY_INJECT_CONTEXT - auto-inject at session start (true/false)
+  TOKEN_BUDGET               - max tokens for injected context (default: 2000)
+  EMBEDDING_PROVIDER         - embedding backend (local = bundled model, no API key)
+
+
+================================================================================
+4. /ATTACK SKILL
+================================================================================
+
+File:     ~/.claude/skills/attack/SKILL.md
+Lines:    526
+Trigger:  Invoked with /attack <goal>
+
+Description:
+  Recursive multi-agent orchestration for complex goals. Inspired by Cursor's
+  /orchestrate plugin, adapted for Claude Code's Agent tool and native worktree
+  support. A planner decomposes the goal into a task graph, spawns workers and
+  verifiers in parallel via the Agent tool with worktree isolation, tracks state
+  in .attack/<slug>/, recovers from failures, and converges when all tasks are
+  verified.
+
+Core Principles:
+  1. Planners do not write code — only reason, decompose, spawn, react.
+  2. Workers are isolated — each in its own git worktree.
+  3. Every task has a verifier — no task is done until a separate agent confirms.
+  4. Verifiers do not fix — they write structured failure handoffs and stop.
+  5. Independent tasks spawn in parallel — same Agent() invocation message.
+  6. Retry before restructure, restructure before abandon.
+     First failure: fix-worker. Second failure: restructure plan.
+  7. State is durable — written to .attack/<slug>/ before spawning agents.
+
+Node Types:
+  planner    — opus   — decomposes goal, owns task graph, reacts to handoffs
+  subplanner — sonnet — decomposes a complex subtask into leaf tasks
+  worker     — sonnet — implements a leaf task in an isolated worktree
+  verifier   — haiku  — checks worker output against acceptance criteria
+               sonnet — when check requires judgment (code review, output quality)
+
+Execution Model:
+  Agent(
+    prompt: <handoff template filled in>,
+    model: <per node type>,
+    isolation: "worktree"
+  )
+  Both worker agents fire concurrently if tasks are independent.
+
+State Layout (.attack/<rootSlug>/):
+  plan.json               — full task graph + current status
+  state.json              — planner loop position, retry counts, merge log
+  handoffs/
+    <taskId>_worker.md    — worker result handoff
+    <taskId>_verifier.md  — verifier result handoff
+    <taskId>_subplanner.md — subplanner decomposition handoff
+
+rootSlug: goal lowercased, spaces replaced with dashes, truncated to 40 chars.
+
+Plan JSON Schema:
+  {
+    "goal": "string",
+    "slug": "string",
+    "createdAt": "ISO 8601",
+    "updatedAt": "ISO 8601",
+    "tasks": [
+      {
+        "id": "T1",
+        "title": "string",
+        "type": "leaf | compound",
+        "status": "pending | in_progress | worker_done | verified | failed | restructured",
+        "dependsOn": [],
+        "acceptanceCriteria": [],
+        "worktreePath": null,
+        "retryCount": 0,
+        "failureReason": null,
+        "children": []
+      }
+    ]
+  }
+
+Status transitions:
+  pending       -> in_progress  (worker spawned)
+  in_progress   -> worker_done  (worker handoff received)
+  worker_done   -> verified     (verifier pass)
+  worker_done   -> failed       (verifier fail, retryCount < 2)
+  failed        -> in_progress  (fix-worker spawned, retryCount++)
+  failed        -> restructured (retryCount >= 2, planner splits/replaces task)
+
+State JSON Schema:
+  {
+    "phase": "decompose | spawn | verify | converge | done | error",
+    "pendingMerges": [],
+    "mergedTasks": [],
+    "retryCounts": {},
+    "log": [{ "ts": "ISO 8601", "event": "string" }]
+  }
+
+Handoff Flow:
+  planner writes task to plan.json
+    -> spawns worker (Agent, worktree)
+       -> worker writes handoffs/<task_id>_worker.md
+    -> planner reads handoff
+    -> spawns verifier (Agent, same or fresh worktree)
+       -> verifier writes handoffs/<task_id>_verifier.md
+    -> planner reads verifier handoff
+       -> PASS: marks task done, merges worktree
+       -> FAIL attempt 1: spawns fix-worker
+       -> FAIL attempt 2: restructures plan
+
+
+================================================================================
+5. TERMINAL MANAGER FIX
+================================================================================
+
+File: ~/.claude/scripts/session-browser/modules/terminal-manager.mjs
+
+The terminal spawning was fixed to use the correct Claude CLI flags.
+
+Problem: original code used --yes (does not exist in Claude CLI) and
+--max-turns (not a valid flag).
+
+Fix: replaced with --dangerously-skip-permissions (auto-accepts all tool
+permissions in the spawned Claude subprocess).
+
+Current spawn args built in runPrompt():
+  const args = ['-p', message, '--output-format', 'json']
+  if (t.ownSessionId)  args.push('--resume', t.ownSessionId)
+  if (t.model)         args.push('--model', t.model)
+  if (t.maxBudget > 0) args.push('--max-budget-usd', String(t.maxBudget))
+  if permissionMode is not 'default':
+    args.push('--permission-mode', t.permissionMode)
+  else:
+    args.push('--dangerously-skip-permissions')
+
+Terminal state object fields:
+  id, ownSessionId, output (ring buffer max 500 chunks), listeners (Set),
+  alive, createdAt, dir, name, model, maxTurns, maxBudget,
+  permissionMode, effortLevel, pending
+
+Output parsing:
+  Expects JSON stdout: { session_id, result, total_cost_usd, num_turns }
+  Strips hook-related stderr lines (Hook cancelled, Hook failed).
+  Falls back to raw stdout/stderr if JSON parse fails.
+
+Default model for new terminals: claude-sonnet-4-6
+
+
+================================================================================
+6. ARCHITECTURE
+================================================================================
+
+Single HTML File Frontend
+  app.html (~8141 lines) contains all CSS, Three.js scene code, and React
+  components in a single file. JSX is compiled in-browser by Babel standalone.
+  No build step required — serves directly as static HTML.
+
+Node.js Server (server.mjs)
+  HTTP server on 127.0.0.1:7337 (overridable via SB_PORT).
+  Imports all backend modules and routes requests.
+  CORS headers set to * for local development.
+  REST API endpoints for all data, plus SSE for live terminal streaming.
+
+Backend Modules (all in .../session-browser/modules/):
+
+  companion-api.mjs
+    Manages the persistent companion pet. State persisted to companion-state.json.
+    Deterministic roll from date seed (FNV1a hash, mulberry32 RNG).
+    15 species, 5 rarities (weighted), 5 eye types, 5 moods, shiny flag.
+    Stats: debugging, patience, chaos, wisdom, snark.
+    Encouraging remarks based on time of day and companion rarity.
+
+  smart-suggestions-api.mjs
+    Tail-reads recent session JSONL files (last 8KB each, max 5 files).
+    Checks: uncommitted git changes, build errors in transcripts, tests not run.
+    Returns up to 3 suggestions with agent name, model, and prompt.
+    Cache TTL 30 seconds.
+
+  terminal-manager.mjs
+    Spawns Claude CLI subprocesses. Manages terminal state map.
+    Ring buffer of 500 output chunks per terminal.
+    SSE listener Set for live streaming.
+    See Section 5 for fix details.
+
+  routing-api.mjs
+    getWorkerLatestOutput(sessionId): tail-reads 16KB of a session JSONL,
+    reverse scans for the last assistant text block (>20 chars), returns it.
+    Used for speech bubbles in the 3D scene.
+
+  worker-activity-api.mjs
+    getWorkersActivity(activeSessions): for each active session, tail-reads 8KB,
+    extracts last 5 tool_use blocks. Derives status (active/idle/error).
+    actionForTool(): maps tool name to action type (read/write/tool/error).
+    Cache TTL 3 seconds per session.
+
+  db.mjs
+    SQLite persistence via better-sqlite3.
+    WAL mode + prepared statements.
+    Graceful degradation: if better-sqlite3 not installed, all functions are stubs.
+    DB file: ~/.claude/scripts/session-browser/data.db
+    Tables: session_snapshots (session_id, project_name, model, derived_title,
+    input_tokens, output_tokens, and more).
+    Provides: snapshotIfNeeded, upsertAgents, upsertSkills.
+
+  system-api.mjs
+    getSystemHealth(): checks Claude processes (tasklist on Windows, pgrep on
+    POSIX), computes directory sizes for ~/.claude subdirectories, reads
+    settings.json, checks agentmemory and QMD health.
+    getClaudeConfig(): reads and returns parsed settings.json.
+    getProjectStats(): counts sessions, agents, skills, commands.
+
+  agent-bus.mjs
+    File-based event bus for agent-to-agent communication.
+    Events (max 200), tasks (max 500), messages (max 200) stored as JSON files.
+    Functions: postEvent, getEvents, sendDirectedMessage, getMessagesForAgent,
+    markMessageDelivered, sendHandoff, getHandoffsForAgent, completeHandoff,
+    getSharedTasks, createSharedTask, updateSharedTask, getProjectContext.
+    Uses addListener for SSE broadcast.
+    Store at: ~/.claude/agent-bus/events.json, tasks.json, messages.json
+
+  relationship-index-api.mjs
+    Builds cross-reference index from all session JSONL files via scanner.
+    Maps: sessionsByAgent, sessionsBySkill, sessionsByProject, agentsByProject,
+    skillsByProject, sessionMeta. Cache TTL 60 seconds.
+    Exports: getRelationshipIndex, getSessionGraph, getAgentGraph, getSkillGraph,
+    getProjectGraph, searchAll.
+
+  team-sync-api.mjs
+    Git-based team sync for sharing memory files and skills.
+    Sync root: ~/.claude/team-sync/<repo-name>/ (configurable via TEAM_SYNC_REPO)
+    Shared memory: Sync Root/Shared Mem/
+    Shared skills: Sync Root/Shared Skills/
+    Functions: getTeamSyncStatus, listSharedMemory, listSharedSkills,
+    readSharedFile, writeSharedFile, pullFromRemote, pushToRemote, syncFile,
+    createProject.
+    Remote: any private git repo you control.
+
+  labels-api.mjs
+    Per-session label management (session-labels.json).
+    Provides getLabels, setLabel, bulkSetLabels, getSuggestionsForSessions,
+    getKnownLabels.
+
+  launch-configs-api.mjs
+    Named launch configurations for spawning terminals with preset model, path,
+    permissions. Stored in launch-configs.json.
+
+  docs-browser-api.mjs
+    Read, write, search markdown documentation files. Scoped to safe directories.
+
+  skills-agents-api.mjs
+    Read/write agent and skill markdown files. Used by the in-browser editor.
+
+  projects-api.mjs
+    Reads project directories from ~/.claude/projects/.
+    Decodes slug to readable path. Strips common path-prefix noise.
+    Supports reading and writing per-project documentation files.
+
+  log-viewer-api.mjs
+    Tail and search daily log files from the project memory log directory.
+
+  openclaw-modules-api.mjs
+    Lists and reads source code of session-browser modules themselves.
+
+  ms-skills.mjs
+    Static list of Microsoft-provided skills (Azure AI, M365, DevOps, etc.)
+    organized by category and language. Used for the skills browser in the UI.
+
+scanner.mjs
+  Reads Claude Code session JSONL files from ~/.claude/projects/.
+  Model pricing table:
+    claude-opus-4-6:    $15 input / $75 output per million tokens
+    claude-sonnet-4-6:  $3  input / $15 output per million tokens
+    claude-haiku-4-5:   $0.8 input / $4 output per million tokens
+  Active threshold: 90 minutes.
+  Cleans title text: strips XML tags, ANSI codes, image/pasted text tags,
+  arrow prefixes.
+  Detects session title from first meaningful user message.
+  Background scan with 60-second cache TTL.
+  File-level cache (Map) to avoid re-reading unchanged files.
+
+
+================================================================================
+7. KEY TECHNICAL DECISIONS
+================================================================================
+
+Three.js Group objects for raycaster click detection
+  Server rack meshes are wrapped in THREE.Group. raycaster.intersectObject()
+  is called with the group, not individual meshes, to ensure clicks on any
+  sub-mesh register as a hit on the rack.
+
+CustomEvent pattern for cross-component state
+  mc-nav CustomEvent dispatched on window for tab navigation.
+  mc-anon-toggle CustomEvent for anonymous mode state.
+  Components add event listeners in useEffect hooks. This avoids prop-drilling
+  through the deeply nested 3D scene component.
+
+CanvasTexture text in anonymous mode
+  CanvasTexture is used for text rendered onto 3D planes (HUD board, monitor
+  text, worker name signs). When anon mode is active, the text is replaced
+  with block characters before the texture is drawn. CSS blur cannot reach
+  WebGL canvas content, so text replacement is the only option for full
+  redaction of 3D scene text.
+
+CSS class .anon on html element
+  Adding/removing class 'anon' on document.documentElement drives all UI blur.
+  CSS rule: .anon .anon-blur { filter: blur(5px) }
+  Applied to: worker title (term-title), project subtitle, session labels,
+  any element with class anon-blur.
+
+useDraggablePanel hook
+  Custom React hook managing position (x, y) and size (w, h) for each panel.
+  State persisted to localStorage with key prefix 'mc-panel-<key>'.
+  Returns: { pos, size, setPos, setSize, style } where style includes
+  position: 'fixed', left, top, width, height.
+
+BM25 search for agentmemory
+  The iii-engine backend (agentmemory server) uses BM25 hybrid search.
+  This means the system works without an external embedding API key for
+  basic memory retrieval. Vector search is available when an embedding
+  provider is configured (EMBEDDING_PROVIDER env var).
+
+SQLite via better-sqlite3
+  Chosen over async alternatives because scanner.mjs uses synchronous I/O.
+  Keeps the architectural model consistent — no async/await complexity in the
+  persistence layer. Gracefully degrades when better-sqlite3 is missing.
+
+Single HTML file
+  All frontend code in one file for simplicity. No build toolchain needed.
+  Tradeoff: harder to navigate (8141 lines), but zero deployment complexity.
+  JSX compiled at page load time by Babel standalone (adds ~300ms to first load).
+
+SSE for live terminal streaming
+  Server keeps a Set of listeners per terminal. When a chunk arrives from the
+  Claude subprocess, it is pushed to all active SSE connections.
+  Clients use EventSource API.
+  Each terminal's SSE endpoint: GET /api/terminals/<id>/stream
+
+Companion determinism
+  The companion's species, rarity, and stats are deterministically derived from
+  a seed (typically the date string) via FNV1a hash + mulberry32 PRNG.
+  Same seed always produces the same companion — useful for daily companions
+  that are stable within a day.
+
+
+================================================================================
+8. FILE INVENTORY
+================================================================================
+
+Rules (26 files total):
+  common/ (13 files):
+    agents.md              — agent orchestration, model selection, parallel tasks
+    coding-style.md        — immutability, file size limits, error handling
+    development-workflow.md — full feature lifecycle: index, research, plan, TDD
+    git-workflow.md        — commit format, PR process, push safety
+    hooks.md               — hook types, when to auto-accept permissions
+    humanizer.md           — writing style, removing AI-speak
+    karpathy-method.md     — think first, surgical edits, minimum code
+    lessons-learned.md     — accumulated gotchas (PowerShell/az, Docker, regex)
+    patterns.md            — repository pattern, API response envelope
+    performance.md         — model selection strategy, context window management
+    security.md            — pre-commit checklist, secret management
+    testing.md             — 80% coverage minimum, TDD workflow
+    verify-before-assigning.md — don't state assumptions as facts
+
+  python/ (5 files):
+    coding-style.md, hooks.md, patterns.md, security.md, testing.md
+
+  typescript/ (5 files):
+    coding-style.md, hooks.md, patterns.md, security.md, testing.md
+    (TypeScript specifics: Zod for validation, Playwright for E2E,
+     async/await + try/catch error handling, spread for immutability)
+
+Commands (17 slash commands in ~/.claude/commands/):
+  /audit          — code quality, security, performance deep review
+  /buddy          — hatch or visit AI companion
+  /build          — generate MCP servers, agent stacks, fix syntax, run tests
+  /debug          — MCP connectivity, D365/OData, Graph API diagnostics
+  /docs           — auto-generate docs, MS stack reference, OData help
+  /dream          — consolidate daily logs into structured memory (weekly)
+  /index          — create/update PROJECT_INDEX.json (uses ericbuess tool)
+  /log            — append timestamped entry to daily log
+  /recall         — search agentmemory for cross-session knowledge
+  /review         — quick code review of recent changes
+  /session-browser — launch the visual session browser
+  /ship           — review + test + commit pipeline
+  /swarm          — split task across parallel subagents
+  /tick           — proactive check-in: status, suggestions, warnings
+  /work           — autonomous work loop
+
+Skills (33+ custom skills in ~/.claude/skills/):
+  Development:
+    attack          — multi-agent orchestration (planner/worker/verifier)
+    improve         — self-improving memory pipeline (interactive version)
+    mcp-builder     — create MCP servers in Python (FastMCP) or TypeScript
+    webapp-testing  — test local web apps via Playwright
+    web-artifacts-builder — multi-component React/Tailwind/shadcn artifacts
+    algorithmic-art — generative art with p5.js
+    skill-creator   — create, modify, and benchmark skills
+    claw-code-parity — CLAW 3D code parity checks
+
+  Azure & Cloud:
+    azure-deploy    — execute Azure deployments (azd up, terraform apply)
+    azure-diagnostics — debug production issues in Container Apps, AKS
+    azure-rbac      — find least-privilege roles, generate Bicep/CLI
+    azure-skills    — Application Insights instrumentation guidance
+    azure-infra-subagents — infrastructure subagent patterns
+    entra-app-registration — Entra ID app registration, OAuth 2.0, MSAL
+    ms365-tenant-manager — M365 tenant admin: users, Exchange, Teams
+
+  Documents & Output:
+    docx            — create, read, edit Word (.docx) files
+    pdf             — extract, merge, split, watermark, OCR PDFs
+    pptx            — create and edit PowerPoint decks
+    xlsx            — create and edit Excel spreadsheets
+    doc-coauthoring — structured co-authoring for specs and proposals
+
+  Design:
+    canvas-design   — static visual design output (.png, .pdf)
+    frontend-design — production-grade web UI components
+    theme-factory   — apply or generate visual themes
+    brand-guidelines — Anthropic brand colors and typography
+    slack-gif-creator — animated GIFs optimized for Slack
+
+  Project-specific:
+    humanizer       — rewrite text to sound human, remove AI-speak
+
+  Learned skills directory:
+    ~/.claude/skills/learned/ — auto-generated skill definitions from sessions
+
+Agents (37 in ~/.claude/agents/):
+  architect, bug-hunter, build-error-resolver, chief-of-staff, code-architect,
+  code-explorer, code-reviewer, code-simplifier, custom-orchestrator,
+  database-reviewer, doc-updater, e2e-runner, ecc-orchestrator,
+  feature-builder, go-build-resolver, go-reviewer, harness-optimizer,
+  index-analyzer, loop-operator, performance-optimizer, planner,
+  project-scout, python-reviewer, refactor-cleaner, refactor-lead,
+  security-reviewer, silent-failure-hunter,
+  sp-brainstorming, sp-dispatching-parallel-agents, sp-executing-plans,
+  sp-subagent-driven-development, sp-systematic-debugging,
+  sp-test-driven-development, sp-verification-before-completion,
+  sp-writing-plans,
+  swarm-coordinator, tdd-guide, typescript-reviewer
+
+  Model assignments:
+    opus   — architect, chief-of-staff, custom-orchestrator, ecc-orchestrator,
+             planner, refactor-lead
+    sonnet — most agents (default for all coding/review/build tasks)
+    haiku  — doc-updater (lightweight, frequently invoked)
+
+Hooks (13 lifecycle hooks):
+  See Section 10 for full pipeline details.
+
+Scripts (in ~/.claude/scripts/):
+  session-recall.js        — SessionStart: inject cross-session memory
+  session-learn.js         — SessionEnd: extract corrections, write lessons-learned
+  save-account-info.js     — SessionStart: capture auth status for HUD
+  guard-git-push.ps1       — PreToolUse: block pushes to disallowed remotes (configurable)
+  verify-aca-deploy.ps1    — PostToolUse: check ACA revision status after deploy
+  precompact-preserve.ps1  — PreCompact: snapshot context, send toast notification
+  notify-stop.ps1          — Stop: Windows 11 toast notification + sound
+  terminal-signature.ps1   — (utility)
+  migrate-to-agentmemory.mjs — one-time migration of local memories
+  migrate-memories.mjs     — one-time migration helper
+  import-sessions.mjs      — import session data
+  consolidation-v2.log     — log file for session-learn output
+  consolidation.log        — log file (older version)
+
+  External hook scripts (from claude-code-project-index):
+    ~/.claude-code-project-index/scripts/
+      run_python.sh        — runs Python scripts in virtualenv
+      i_flag_hook.py       — UserPromptSubmit: check /index flag
+      periodic_reindex.py  — UserPromptSubmit: background reindex if stale
+      auto_log.py          — SessionEnd: append to daily log
+
+Backend Modules (21 in session-browser/modules/):
+  See full descriptions in Section 6.
+
+Config files:
+  ~/.claude/settings.json    — hooks, permissions, model, theme, plugins
+  ~/.claude/.mcp.json        — MCP server wiring (agentmemory, qmd)
+  ~/.claude/keybindings.json — custom keyboard shortcuts
+  ~/.claude/settings.local.json — local overrides (not in export)
+
+
+================================================================================
+9. MCP SERVERS
+================================================================================
+
+Four MCP servers are configured and active:
+
+  qmd (Quantum Memory Database / semantic search)
+    Type:      HTTP (streamable)
+    URL:       http://localhost:8181/mcp
+    Config:    ~/.claude/.mcp.json
+    Purpose:   Semantic search over indexed project documents and session
+               transcripts. Used by session-recall.js and session-learn.js.
+    CLI:       qmd query "<query>" --collection <name> -n <limit> --json
+    Health:    curl -s http://localhost:8181/health
+    Collections used: demo-ville, hive-core, hive-apiary, claude-rules, sessions
+
+  agentmemory
+    Type:      stdio (npx @agentmemory/mcp)
+    URL:       Connects to server at http://localhost:3111
+    Config:    ~/.claude/.mcp.json
+    Purpose:   Persistent cross-session memory with BM25 + vector search
+               and knowledge graph traversal.
+    Tools:     memory_save, memory_recall, memory_smart_search,
+               memory_consolidate (4-tier pipeline), and others.
+    Start:     agentmemory --tools all
+    See:       Section 3 for full details.
+
+  Context7 (via claude.ai cloud)
+    Type:      Cloud (provided via claude.ai MCP marketplace)
+    Purpose:   Live library documentation (React, Next.js, Azure SDKs, etc.)
+    Tools:     mcp__context7__query-docs, mcp__context7__resolve-library-id
+    Permitted: mcp__context7__* in settings.json allow list.
+    Use when:  User asks about a library/framework — even well-known ones.
+               Training data may not reflect recent API changes.
+
+  Microsoft Learn (via claude.ai cloud)
+    Type:      Cloud (provided via claude.ai MCP marketplace)
+    Purpose:   Official Microsoft/Azure documentation search and fetch.
+    Tools:     microsoft_docs_search, microsoft_code_sample_search,
+               microsoft_docs_fetch
+    Permitted: mcp__microsoft-learn__* in settings.json allow list.
+
+  ms365 (via claude.ai cloud)
+    Type:      Cloud (provided via claude.ai MCP marketplace)
+    Purpose:   Microsoft Graph API — full M365 access (Mail, Calendar,
+               OneDrive, Teams, SharePoint, Planner, Todo, etc.)
+    Note:      If your work mail is on Microsoft 365, route mail tools through
+               ms365 (Mail.ReadWrite / Mail.Send), not Gmail.
+
+  Google Calendar / Gmail (via claude.ai cloud)
+    Type:      Cloud (provided via claude.ai MCP marketplace)
+    Permitted: mcp__claude_ai_Google_Calendar__*, mcp__claude_ai_Gmail__*
+
+
+================================================================================
+10. HOOK PIPELINE
+================================================================================
+
+All hooks configured in ~/.claude/settings.json under "hooks".
+
+Event: SessionStart
+  Hook 1: session-recall.js (5s timeout)
+    Detects project from CWD.
+    Checks if QMD is available (http://localhost:8181/health).
+    If QMD available:
+      Query '<project-collection>' for 'lessons learned corrections rules' (limit 5)
+      Query 'sessions' for 'user corrected Claude feedback' (limit 3)
+    Fallback: reads <project>/.claude/rules/lessons-learned.md directly.
+    Injects result as additionalContext (max 2000 chars).
+    Project map (configurable in session-recall.js):
+      <cwd substring> -> { id, rulesDir, qmd collection }
+      Example: { key: 'my-app', id: 'my-app',
+                 rulesDir: '<repo>/.claude/rules', qmd: 'my-app' }
+      (default)       -> project id global, qmd collection claude-rules
+
+  Hook 2: save-account-info.js (5s timeout)
+    Runs 'claude auth status', parses JSON output.
+    Writes to ~/.claude/plugins/claude-hud/current-account.json.
+    Used by the HUD status bar plugin.
+
+  Hook 3: agentmemory/session-start.mjs (5s timeout)
+    Notifies agentmemory that a new session is opening.
+    Can inject relevant memories into context if AGENTMEMORY_INJECT_CONTEXT=true.
+
+Event: SessionEnd
+  Hook 1 (async, 120s): session-learn.js
+    Step 1: Find latest JSONL transcript under ~/.claude/projects/<slug>/
+    Step 2: Convert transcript to markdown (user + assistant turns, max 2000 chars each)
+    Step 3: Write to ~/.claude/qmd-sessions/<sessionId>.md
+    Step 4: Update QMD sessions collection index via qmd CLI
+    Step 5: Query QMD semantically for correction+reasoning pairs
+    Step 6: Call OpenAI gpt-4o (temp 0.1, max 2048 tokens) — PROPOSE changes
+            System prompt: extract concrete repeatable rules with explicit reasoning
+    Step 7: Call OpenAI gpt-4o (separate system prompt) — VALIDATE proposals
+            Strict gate: reject vague, one-time, or non-generalizable rules
+    Step 8: Write only APPROVED changes to <project>/.claude/rules/lessons-learned.md
+    Step 9: Log everything to ~/.claude/scripts/consolidation-v2.log
+    OpenAI API key resolution: env OPENAI_API_KEY (configure additional .env fallback paths in session-learn.js if needed).
+    NO fail-open: every error path returns zero approvals.
+
+  Hook 2 (async, 10s): agentmemory/session-end.mjs
+    Flushes agentmemory session state.
+
+  Hook 3 (5s): auto_log.py
+    Appends session summary to daily log file.
+    Runs via: bash .../run_python.sh .../auto_log.py
+
+Event: UserPromptSubmit
+  Hook 1 (20ms timeout): i_flag_hook.py
+    Checks if the prompt contains a -i flag indicating /index should run.
+    Very fast — must not block the user.
+
+  Hook 2 (20ms timeout): periodic_reindex.py
+    Checks if PROJECT_INDEX.json is stale (older than threshold).
+    Triggers background reindex if needed. Fast, non-blocking.
+
+Event: PreCompact
+  Hook: precompact-preserve.ps1 (5s timeout)
+    Reads hook stdin JSON for cwd, trigger, session_id.
+    Writes snapshot markdown to the memory directory (configurable via
+    CLAUDE_MEMORY_DIR; defaults to ~/.claude/projects/memory/).
+    Content: timestamp, session ID, trigger, working directory, project folder.
+    Purpose: helps re-orient after auto-compaction drops detail.
+    Also sends a Windows 11 toast notification with Notification.Reminder sound.
+
+Event: PreToolUse (matcher: Bash)
+  Hook: guard-git-push.ps1 (3s timeout)
+    Reads stdin JSON to extract the bash command.
+    If the command pushes to a remote listed in BLOCKED_GIT_REMOTES (env var or
+    inline allowlist in the script): DENY with explanation.
+    Rationale: stop accidental pushes to client-owned or vendor repos.
+    Output format: JSON with hookSpecificOutput.permissionDecision = 'deny'
+
+Event: PostToolUse (matcher: Bash)
+  Hook: verify-aca-deploy.ps1 (30s timeout)
+    Parses command from stdin. Only fires on 'az containerapp update|create'.
+    Extracts --name and --resource-group from command string.
+    Waits 10 seconds for revision to materialize.
+    Calls: az containerapp revision list --query active revisions
+    If any revision state != 'Running': sends alarm toast + injects warning
+    into additionalContext: "WARNING: ACA revision is not Running."
+    Configure the path to az.cmd in the script if it's not on PATH.
+
+Event: Stop (matcher: *)
+  Hook 1: notify-stop.ps1 (5s timeout)
+    Reads cwd from stdin JSON.
+    Sends Windows 11 toast: "Claude is done" + folder name.
+    Uses Windows Runtime ToastNotificationManager directly.
+    Fallback: NotifyIcon balloon tip if WinRT not available.
+    Audio: ms-winsoundevent:Notification.Default
+
+  Hook 2 (async, 15s): agentmemory/stop.mjs
+    Final agentmemory flush on session stop.
+
+
+================================================================================
+11. CONTINUOUS IMPROVEMENT PIPELINE
+================================================================================
+
+The harness continuously learns from sessions via four mechanisms:
+
+Mechanism 1: session-recall.js (SessionStart hook)
+  Injects past lessons and corrections into every new session's context.
+  The model "knows" what went wrong before without being told.
+  Flow: detect project -> query QMD for lessons + feedback -> inject as context.
+  Max context injection: 2000 characters (project rules + recent corrections).
+
+Mechanism 2: session-learn.js (SessionEnd hook, async)
+  Runs after every session and automatically updates lessons-learned.md.
+  Core design: two GPT-4o calls with strict validation gate.
+    Call 1 (Proposer):
+      "You are a learning system. Find concrete corrections with explicit user
+      reasoning. Output JSON array of rule proposals."
+    Call 2 (Validator):
+      "You are a strict validator. Reject any rule that is vague, one-time, or
+      not generalizable. Only approve concrete, repeatable rules with stated
+      reason. Output JSON with approved/rejected arrays."
+  Entry format: "**[Rule]**: what to do. Reden: why (max 120 chars)."
+  Written to: <project>/.claude/rules/lessons-learned.md
+  This produces the lessons-learned.md entries visible throughout the system.
+
+Mechanism 3: /improve skill (interactive version)
+  File: ~/.claude/skills/improve/SKILL.md
+  The manual, interactive version of session-learn.js.
+  Same query approach (QMD or transcript fallback), same validation criteria.
+  Difference: shows proposals to user and asks for confirmation before writing.
+  Steps: detect project -> query QMD -> extract correction+reasoning pairs ->
+         read current lessons-learned.md -> propose + validate -> write approved.
+
+Mechanism 4: /dream command (weekly housekeeping)
+  File: ~/.claude/commands/dream.md
+  Reads daily log files from memory/logs/ since last_dream date.
+  Identifies: patterns, decisions, open threads, new knowledge.
+  Consolidates into typed memory files (feedback, project, user, reference).
+  Updates existing memories before creating new ones. Prunes stale memories
+  (>30 days, never referenced).
+  After local writes, syncs to agentmemory:
+    POST /agentmemory/remember per memory
+    memory_consolidate via MCP for 4-tier consolidation pipeline.
+  Writes ~/.claude/projects/<slug>/memory/last_dream.md with today's date.
+  Scope: /dream reads logs, writes memories. /improve reads transcripts, writes
+  lessons-learned. They do not overlap.
+
+QMD (Quantum Memory Database):
+  Semantic search index at localhost:8181.
+  Used by both session-recall.js and session-learn.js.
+  Collections:
+    sessions     — all session transcripts (markdown format)
+    claude-rules — global harness rules
+    <project>    — per-project docs and rules (create one collection per project)
+  CLI: qmd query "<query>" --collection <name> -n <limit> --json
+
+Self-improvement scope:
+  Outputs written: <project>/.claude/rules/lessons-learned.md only.
+  Never modifies: coding-style, agents, patterns, security, testing, infra-*.
+  This constraint prevents the pipeline from corrupting stable rules.
+
+
+================================================================================
+12. DEPLOYMENT CONTEXT (example)
+================================================================================
+
+This section is environment-specific. Fill in your own targets. The harness does
+not assume any particular cloud; the patterns below are common reference points.
+
+Example: Azure Container Apps deployment workflow for an MCP server / agent:
+  1. az acr login
+  2. docker build --platform linux/amd64 -t <image>
+  3. docker push <image>
+  4. az containerapp update --name <app> --resource-group <rg> --image <image>
+  5. Verify the new revision is Running (verify-aca-deploy.ps1 automates this).
+
+Example: Kubernetes Gateway API on AKS:
+  Gateway: gateway.networking.k8s.io/v1 with gatewayClassName: istio
+           (NOT Istio native VirtualService / Gateway)
+  Routes via HTTPRoute with parentRefs to Gateway
+  NetworkPolicy: allow ingress from pods carrying the gateway label
+  Istio sidecar opt-out where you don't need it: sidecar.istio.io/inject: "false"
+
+Git safety:
+  Maintain a guard hook (scripts/guard-git-push.ps1) that blocks pushes to
+  remotes you don't own. Configure via BLOCKED_GIT_REMOTES env var. Always
+  run `git remote -v` before pushing on a new clone.
+
+Docker platform:
+  Always pass `--platform linux/amd64` when building on ARM hosts (Apple Silicon)
+  for x86 cloud runtimes — otherwise the container crashes silently.
+
+Valid Claude model IDs (as of writing):
+  claude-sonnet-4-6, claude-opus-4-6, claude-haiku-4-5-20251001
+  Validate IDs against the current Anthropic docs before deploy.
+
+
+================================================================================
+13. SETTINGS SUMMARY (settings.json)
+================================================================================
+
+Model:        claude-opus-4-6 (default for all sessions)
+Theme:        dark-daltonized
+Effort level: high
+Sandbox:      disabled
+Voice:        enabled, hold-to-talk mode
+Auto-updates: latest channel
+
+Permissions (allow list):
+  Bash, Read, Edit, Write, Glob, Grep
+  mcp__context7__*, mcp__microsoft-learn__*
+  mcp__claude_ai_Google_Calendar__*, mcp__claude_ai_Gmail__*
+  mcp__agentmemory__*
+
+Permissions (deny list):
+  Bash(git reset --hard*)
+  Bash(git checkout -- *)
+  Bash(git clean*)
+  Bash(rm -rf *)
+  Bash(gh pr create*)
+  Bash(gh issue create*)
+
+Default mode: auto (no permission prompts for allowed tools)
+
+Plugins enabled:
+  everything-claude-code (from github:affaan-m/everything-claude-code)
+  claude-hud (from github:jarrodwatts/claude-hud)
+
+Status line: claude-hud plugin (renders account info, session cost, model)
+
+Auto mode environment hints:
+  These strings are surfaced to the model so it can reason about your stack.
+  Replace with the specifics of your environment, e.g.:
+  Organization: <your org>
+  Cloud: <Azure / AWS / GCP — primary resources>
+  Source control: <git provider URL>
+  Services: <main APIs you integrate with>
+  Local dev: <ports and processes you run on your machine>
+
+skipDangerousModePermissionPrompt: true
+skipAutoPermissionPrompt:          true
+
+
+================================================================================
+14. OPERATIONAL LESSONS LEARNED
+================================================================================
+
+The full list lives in rules/common/lessons-learned.md and grows over time via
+the session-learn pipeline. The categories below show the kinds of entries that
+belong there.
+
+Shell:
+  - On Windows, prefer PowerShell over bash for native CLIs.
+  - Multiline strings in PowerShell: write to a .ps1 file and run with -File.
+    Never use @"..."@ heredoc in -Command parameter.
+
+Docker:
+  - Always pass --platform linux/amd64 when building on ARM for x86 runtimes.
+
+Model IDs:
+  - Validate Claude model IDs against current Anthropic docs before deploy.
+  - Invented IDs return 400 errors silently inside containers.
+
+Cloud deployment:
+  - Verify the deployed revision after pushing (az containerapp revision list,
+    kubectl rollout status, etc.). Don't commit on top of a broken deploy.
+  - Check which branch is actually deployed before applying a hotfix.
+
+Regex:
+  - Python `\b` does not match before/after underscore (it's a word char).
+  - Use a negative lookahead like `(?!\w)` when the match can be followed by _.
+
+Cloud Auth:
+  - ARM and Graph tokens expire independently — keep them separate.
+  - Prefer PKCE authorization code flow over device code; many tenants flag
+    device code auth as a phishing risk.
+
+Git push safety:
+  - Never push to repos you don't own (client repos, vendor forks).
+  - Configure scripts/guard-git-push.ps1 with BLOCKED_GIT_REMOTES.
+  - Run `git remote -v` before pushing on any new clone.
+
+M365 / Teams app packages:
+  - Teams manifest permissions: only "identity" — other values fail schema check.
+  - Plugin.json confirmation lives under capabilities, not at root.
+  - Use Python zipfile, not PowerShell Compress-Archive (Teams Admin Center
+    rejects some Compress-Archive zips).
+
+Kustomize:
+  - Base and overlays must live in separate directories.
+  - Resources must be within or below the base directory.
+
+Document deliverables:
+  - Use .docx (or PDF) for client-facing analyses, not plain text.
+  - python-docx: use format markers + parser, not line-by-line paragraphs.
+
+Credentials hygiene:
+  - Never put credentials in markdown docs that go to git, even internal ones.
+
+Proactive execution:
+  - Do the work yourself where no decision is needed.
+  - Ask only when there is a genuine choice.
+
+
+================================================================================
+END OF CONTEXT FILE
+================================================================================

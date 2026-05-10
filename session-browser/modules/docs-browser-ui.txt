@@ -1,0 +1,599 @@
+// ============================================================
+// DocsTab — paste this into the <script type="text/babel"> block
+// in app.html, then add <DocsTab /> as a tab panel.
+//
+// Dependencies (all globally available in app.html):
+//   React, useState, useEffect, useCallback, useMemo
+//   EditorModal (defined in app.html)
+//   CSS vars: --bg, --card, --border, --pri, --mono, --sans, --t1-t4
+//   API routes wired in server.mjs:
+//     GET  /api/docs          → tree
+//     GET  /api/docs/read?path=... → { content, filename, sizeBytes, modifiedAt }
+//     PUT  /api/docs/write    → body: { path, content }
+//     GET  /api/docs/search?q=... → [{ path, filename, matches, snippet }]
+// ============================================================
+
+// --------------- Markdown renderer (no external lib) ---------------
+function renderMarkdown(md) {
+  if (!md) return '';
+
+  const escape = s => s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+
+  const inlineFormat = s => s
+    .replace(/`([^`]+)`/g, '<code style="font-family:var(--mono);font-size:.9em;background:var(--bg);padding:1px 4px;border-radius:3px">$1</code>')
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/\*([^*]+)\*/g, '<em>$1</em>')
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener" style="color:var(--pri)">$1</a>');
+
+  const lines = md.split('\n');
+  const out = [];
+  let inCode = false;
+  let codeLang = '';
+  let codeLines = [];
+  let inList = false;
+  let listItems = [];
+
+  const flushList = () => {
+    if (!inList) return;
+    out.push('<ul style="margin:.4em 0 .4em 1.2em;padding:0;list-style:disc">' +
+      listItems.map(li => '<li style="margin-bottom:2px;line-height:1.5">' + inlineFormat(escape(li)) + '</li>').join('') +
+      '</ul>');
+    listItems = [];
+    inList = false;
+  };
+
+  for (const raw of lines) {
+    const line = raw;
+
+    // Fenced code block toggle
+    if (line.startsWith('```')) {
+      if (!inCode) {
+        flushList();
+        inCode = true;
+        codeLang = line.slice(3).trim();
+        codeLines = [];
+      } else {
+        out.push(
+          '<pre style="background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:10px 12px;overflow-x:auto;margin:.6em 0">' +
+          '<code style="font-family:var(--mono);font-size:.85em;line-height:1.6;color:var(--t1)">' +
+          escape(codeLines.join('\n')) +
+          '</code></pre>'
+        );
+        inCode = false;
+        codeLines = [];
+        codeLang = '';
+      }
+      continue;
+    }
+
+    if (inCode) { codeLines.push(raw); continue; }
+
+    // Headings
+    const hMatch = line.match(/^(#{1,6})\s+(.+)/);
+    if (hMatch) {
+      flushList();
+      const level = hMatch[1].length;
+      const sizes = { 1: '1.4em', 2: '1.2em', 3: '1.05em', 4: '1em', 5: '.95em', 6: '.9em' };
+      const weights = { 1: '700', 2: '700', 3: '600', 4: '600', 5: '600', 6: '500' };
+      const margins = { 1: '1em 0 .4em', 2: '.9em 0 .35em', 3: '.8em 0 .3em', 4: '.7em 0 .25em', 5: '.6em 0 .2em', 6: '.5em 0 .15em' };
+      out.push(`<h${level} style="font-size:${sizes[level]};font-weight:${weights[level]};margin:${margins[level]};color:var(--t1);font-family:var(--sans)">${inlineFormat(escape(hMatch[2]))}</h${level}>`);
+      continue;
+    }
+
+    // Horizontal rule
+    if (/^[-*_]{3,}$/.test(line.trim())) {
+      flushList();
+      out.push('<hr style="border:none;border-top:1px solid var(--border);margin:.8em 0">');
+      continue;
+    }
+
+    // Blockquote
+    if (line.startsWith('> ')) {
+      flushList();
+      out.push('<blockquote style="border-left:3px solid var(--border);margin:.4em 0;padding:.3em .8em;color:var(--t3);font-style:italic">' + inlineFormat(escape(line.slice(2))) + '</blockquote>');
+      continue;
+    }
+
+    // List item
+    const liMatch = line.match(/^[\s]*[-*+]\s+(.+)/);
+    if (liMatch) {
+      inList = true;
+      listItems.push(liMatch[1]);
+      continue;
+    }
+
+    // Numbered list
+    const numMatch = line.match(/^[\s]*\d+\.\s+(.+)/);
+    if (numMatch) {
+      flushList();
+      out.push('<div style="margin:.2em 0 .2em 1em;line-height:1.5">' + inlineFormat(escape(numMatch[1])) + '</div>');
+      continue;
+    }
+
+    // Empty line
+    if (line.trim() === '') {
+      flushList();
+      out.push('<div style="height:.5em"></div>');
+      continue;
+    }
+
+    // Paragraph text
+    flushList();
+    out.push('<p style="margin:.25em 0;line-height:1.6;color:var(--t1)">' + inlineFormat(escape(line)) + '</p>');
+  }
+
+  flushList();
+  if (inCode && codeLines.length) {
+    out.push('<pre style="background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:10px 12px;overflow-x:auto;margin:.6em 0"><code style="font-family:var(--mono);font-size:.85em;color:var(--t1)">' + escape(codeLines.join('\n')) + '</code></pre>');
+  }
+
+  return out.join('');
+}
+
+// --------------- File icon helper ---------------
+function fileIcon(name) {
+  if (!name) return '📄';
+  const n = name.toLowerCase();
+  if (n === 'claude.md') return '🤖';
+  if (n.includes('readme')) return '📖';
+  if (n.includes('lesson')) return '💡';
+  if (n.includes('rule') || n.includes('security') || n.includes('coding')) return '📐';
+  if (n.includes('agent')) return '🕵️';
+  if (n.includes('command')) return '⚡';
+  if (n.includes('memory') || n.includes('mem')) return '🧠';
+  if (n.includes('test')) return '🧪';
+  if (n.includes('deploy')) return '🚀';
+  if (n.endsWith('.md')) return '📝';
+  return '📄';
+}
+
+// --------------- Breadcrumb builder ---------------
+function makeBreadcrumb(filePath, label) {
+  if (!filePath) return [];
+  const parts = filePath.replace(/\\/g, '/').split('/');
+  const home = (window.__HOME || '').replace(/\\/g, '/');
+  const cleaned = filePath.replace(/\\/g, '/').replace(home, '~');
+  return cleaned.split('/').filter(Boolean);
+}
+
+// --------------- Tree node component ---------------
+function TreeNode({ node, depth, selectedPath, onSelect, expandedDirs, onToggle }) {
+  const isDir = node.type === 'dir';
+  const isOpen = isDir && expandedDirs.has(node.path);
+  const isActive = node.path === selectedPath;
+
+  const indent = depth * 14;
+  const baseStyle = {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 5,
+    padding: '4px 8px',
+    paddingLeft: 8 + indent,
+    cursor: 'pointer',
+    borderRadius: 5,
+    fontSize: 12,
+    fontFamily: 'var(--sans)',
+    color: isActive ? 'var(--pri)' : 'var(--t2)',
+    background: isActive ? 'var(--pri-bg)' : 'transparent',
+    transition: 'background .06s',
+    userSelect: 'none',
+    whiteSpace: 'nowrap',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    border: 'none',
+    width: '100%',
+    textAlign: 'left',
+  };
+
+  if (isDir) {
+    return (
+      <div>
+        <button
+          style={baseStyle}
+          onClick={() => onToggle(node.path)}
+          onMouseEnter={e => { if (!isActive) e.currentTarget.style.background = 'var(--hover)' }}
+          onMouseLeave={e => { if (!isActive) e.currentTarget.style.background = 'transparent' }}
+        >
+          <span style={{ fontSize: 9, color: 'var(--t4)', minWidth: 8 }}>{isOpen ? '▾' : '▸'}</span>
+          <span style={{ marginRight: 3 }}>📁</span>
+          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{node.name}</span>
+        </button>
+        {isOpen && node.children && node.children.map(child => (
+          <TreeNode
+            key={child.path}
+            node={child}
+            depth={depth + 1}
+            selectedPath={selectedPath}
+            onSelect={onSelect}
+            expandedDirs={expandedDirs}
+            onToggle={onToggle}
+          />
+        ))}
+      </div>
+    );
+  }
+
+  return (
+    <button
+      style={baseStyle}
+      onClick={() => onSelect(node)}
+      onMouseEnter={e => { if (!isActive) e.currentTarget.style.background = 'var(--hover)' }}
+      onMouseLeave={e => { if (!isActive) e.currentTarget.style.background = isActive ? 'var(--pri-bg)' : 'transparent' }}
+    >
+      <span style={{ marginLeft: 13, marginRight: 3 }}>{fileIcon(node.name)}</span>
+      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{node.name}</span>
+    </button>
+  );
+}
+
+// --------------- Main DocsTab component ---------------
+function DocsTab() {
+  const [tree, setTree] = useState([]);
+  const [treeLoading, setTreeLoading] = useState(true);
+  const [treeError, setTreeError] = useState(null);
+
+  const [selected, setSelected] = useState(null); // { path, name }
+  const [doc, setDoc] = useState(null); // { content, filename, sizeBytes, modifiedAt }
+  const [docLoading, setDocLoading] = useState(false);
+  const [docError, setDocError] = useState(null);
+
+  const [expandedDirs, setExpandedDirs] = useState(new Set());
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState([]);
+  const [searching, setSearching] = useState(false);
+  const [searchError, setSearchError] = useState(null);
+
+  const [editor, setEditor] = useState(null); // { path, content } — null = closed
+
+  // Load tree on mount
+  const loadTree = useCallback(async () => {
+    setTreeLoading(true);
+    setTreeError(null);
+    try {
+      const res = await fetch('/api/docs');
+      if (!res.ok) { const d = await res.json(); throw new Error(d.error || 'Failed to load tree'); }
+      const data = await res.json();
+      const nodes = data.tree || data || [];
+      setTree(nodes);
+      // Auto-expand top-level dirs
+      const topDirs = new Set(nodes.filter(n => n.type === 'dir').map(n => n.path));
+      setExpandedDirs(topDirs);
+    } catch (err) {
+      setTreeError(err.message);
+    } finally {
+      setTreeLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { loadTree(); }, [loadTree]);
+
+  // Load document
+  const loadDoc = useCallback(async (node) => {
+    setSelected(node);
+    setDocLoading(true);
+    setDocError(null);
+    setDoc(null);
+    try {
+      const res = await fetch('/api/docs/read?path=' + encodeURIComponent(node.path));
+      if (!res.ok) { const d = await res.json(); throw new Error(d.error || 'Failed to load document'); }
+      const data = await res.json();
+      setDoc(data);
+    } catch (err) {
+      setDocError(err.message);
+    } finally {
+      setDocLoading(false);
+    }
+  }, []);
+
+  // Search with debounce
+  useEffect(() => {
+    const q = searchQuery.trim();
+    if (q.length < 2) { setSearchResults([]); setSearchError(null); return; }
+    const timer = setTimeout(async () => {
+      setSearching(true);
+      setSearchError(null);
+      try {
+        const res = await fetch('/api/docs/search?q=' + encodeURIComponent(q));
+        if (!res.ok) { const d = await res.json(); throw new Error(d.error || 'Search failed'); }
+        const data = await res.json();
+        setSearchResults(data.results || data || []);
+      } catch (err) {
+        setSearchError(err.message);
+        setSearchResults([]);
+      } finally {
+        setSearching(false);
+      }
+    }, 260);
+    return () => clearTimeout(timer);
+  }, [searchQuery]);
+
+  // Toggle expanded directory
+  const toggleDir = useCallback((path) => {
+    setExpandedDirs(prev => {
+      const next = new Set(prev);
+      if (next.has(path)) next.delete(path); else next.add(path);
+      return next;
+    });
+  }, []);
+
+  // Save via editor modal
+  const handleSave = useCallback(async (content) => {
+    if (!editor) return;
+    const res = await fetch('/api/docs/write', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: editor.path, content }),
+    });
+    if (!res.ok) { const d = await res.json(); throw new Error(d.error || 'Save failed'); }
+    // Reload the doc after save
+    if (selected && selected.path === editor.path) {
+      await loadDoc(selected);
+    }
+  }, [editor, selected, loadDoc]);
+
+  const isSearching = searchQuery.trim().length >= 2;
+
+  const breadcrumb = useMemo(() => {
+    if (!selected) return [];
+    return selected.path.replace(/\\/g, '/').split('/').filter(Boolean);
+  }, [selected]);
+
+  const fmtBytes = n => n < 1024 ? n + ' B' : n < 1024 * 1024 ? (n / 1024).toFixed(1) + ' KB' : (n / (1024 * 1024)).toFixed(1) + ' MB';
+  const fmtDate = s => new Date(s).toLocaleString();
+
+  // Layout styles
+  const S = {
+    wrap: { display: 'flex', flex: 1, overflow: 'hidden', background: 'var(--bg)' },
+    sidebar: {
+      width: 240,
+      minWidth: 200,
+      maxWidth: 300,
+      background: 'var(--card)',
+      borderRight: '1px solid var(--border)',
+      display: 'flex',
+      flexDirection: 'column',
+      overflow: 'hidden',
+      flexShrink: 0,
+    },
+    sideHead: {
+      padding: '10px 12px 8px',
+      borderBottom: '1px solid var(--border)',
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      flexShrink: 0,
+    },
+    sideTitle: { font: '600 12px var(--sans)', color: 'var(--t1)' },
+    searchBox: {
+      padding: '8px 10px',
+      borderBottom: '1px solid var(--border)',
+      flexShrink: 0,
+    },
+    treeScroll: { flex: 1, overflowY: 'auto', padding: '6px 4px' },
+    main: { flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' },
+    docHead: {
+      padding: '10px 16px',
+      borderBottom: '1px solid var(--border)',
+      background: 'var(--card)',
+      flexShrink: 0,
+    },
+    breadcrumbRow: { display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap', marginBottom: 4 },
+    breadPart: { font: '11px var(--mono)', color: 'var(--t3)' },
+    breadSep: { font: '11px var(--mono)', color: 'var(--t4)' },
+    breadLast: { font: '500 11px var(--mono)', color: 'var(--t2)' },
+    metaRow: { display: 'flex', alignItems: 'center', gap: 12, font: '11px var(--sans)', color: 'var(--t4)' },
+    docBody: { flex: 1, overflowY: 'auto', padding: '16px 20px' },
+    docContent: {
+      background: 'var(--card)',
+      border: '1px solid var(--border)',
+      borderRadius: 8,
+      padding: '16px 20px',
+      font: '13px/1.7 var(--sans)',
+      color: 'var(--t1)',
+      minHeight: 200,
+    },
+    empty: { textAlign: 'center', padding: 40, color: 'var(--t4)', font: '12px var(--sans)' },
+    loading: { display: 'flex', alignItems: 'center', gap: 8, padding: '32px 20px', color: 'var(--t3)', font: '12px var(--sans)' },
+    searchResult: {
+      padding: '7px 10px',
+      borderRadius: 6,
+      cursor: 'pointer',
+      marginBottom: 3,
+      border: '1px solid transparent',
+      transition: 'all .06s',
+    },
+  };
+
+  return (
+    <div style={S.wrap}>
+      {/* Sidebar */}
+      <div style={S.sidebar}>
+        <div style={S.sideHead}>
+          <span style={S.sideTitle}>Documents</span>
+          <button className="btn btn-g" style={{ fontSize: 10, padding: '3px 8px' }} onClick={loadTree}>↺</button>
+        </div>
+
+        <div style={S.searchBox}>
+          <input
+            className="input"
+            style={{ fontSize: 12 }}
+            placeholder="Search docs…"
+            value={searchQuery}
+            onChange={e => setSearchQuery(e.target.value)}
+          />
+        </div>
+
+        <div style={S.treeScroll}>
+          {treeLoading && (
+            <div style={S.loading}><div className="spin" />Loading...</div>
+          )}
+
+          {treeError && (
+            <div style={{ padding: '10px 12px', color: 'var(--red)', fontSize: 11 }}>{treeError}</div>
+          )}
+
+          {/* Search results */}
+          {!treeLoading && isSearching && (
+            <div>
+              {searching && <div style={S.loading}><div className="spin" />Searching...</div>}
+              {searchError && <div style={{ padding: '8px 10px', color: 'var(--red)', fontSize: 11 }}>{searchError}</div>}
+              {!searching && searchResults.length === 0 && !searchError && (
+                <div style={{ padding: '10px 12px', color: 'var(--t4)', fontSize: 11 }}>No results for "{searchQuery}"</div>
+              )}
+              {!searching && searchResults.map(r => (
+                <button
+                  key={r.path}
+                  style={{
+                    ...S.searchResult,
+                    background: selected && selected.path === r.path ? 'var(--pri-bg)' : 'transparent',
+                    border: selected && selected.path === r.path ? '1px solid rgba(91,95,230,.2)' : '1px solid transparent',
+                    width: '100%',
+                    textAlign: 'left',
+                  }}
+                  onMouseEnter={e => { if (!selected || selected.path !== r.path) e.currentTarget.style.background = 'var(--hover)' }}
+                  onMouseLeave={e => { if (!selected || selected.path !== r.path) e.currentTarget.style.background = 'transparent' }}
+                  onClick={() => loadDoc({ path: r.path, name: r.filename })}
+                >
+                  <div style={{ font: '500 12px var(--sans)', color: 'var(--t1)', marginBottom: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {fileIcon(r.filename)} {r.filename}
+                  </div>
+                  {r.snippet && (
+                    <div style={{ font: '11px var(--mono)', color: 'var(--t3)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {r.snippet}
+                    </div>
+                  )}
+                  <div style={{ font: '10px var(--sans)', color: 'var(--t4)', marginTop: 2 }}>
+                    {r.matches} {r.matches === 1 ? 'match' : 'matches'}
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
+
+          {/* File tree */}
+          {!treeLoading && !isSearching && (
+            <div>
+              {tree.length === 0 && !treeError && (
+                <div style={{ padding: '10px 12px', color: 'var(--t4)', fontSize: 11 }}>
+                  No docs found. Check ~/.claude/ structure.
+                </div>
+              )}
+              {tree.map(node => (
+                <TreeNode
+                  key={node.path}
+                  node={node}
+                  depth={0}
+                  selectedPath={selected && selected.path}
+                  onSelect={loadDoc}
+                  expandedDirs={expandedDirs}
+                  onToggle={toggleDir}
+                />
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Main doc viewer */}
+      <div style={S.main}>
+        {selected ? (
+          <>
+            {/* Doc header with breadcrumb */}
+            <div style={S.docHead}>
+              <div style={S.breadcrumbRow}>
+                {breadcrumb.map((part, i) => (
+                  <span key={i} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                    {i > 0 && <span style={S.breadSep}>/</span>}
+                    <span style={i === breadcrumb.length - 1 ? S.breadLast : S.breadPart}>{part}</span>
+                  </span>
+                ))}
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <div style={S.metaRow}>
+                  {doc && <span>{fmtBytes(doc.sizeBytes)}</span>}
+                  {doc && <span>Modified {fmtDate(doc.modifiedAt)}</span>}
+                </div>
+                {doc && (
+                  <button
+                    className="btn btn-g"
+                    style={{ fontSize: 11, padding: '4px 10px' }}
+                    onClick={() => setEditor({ path: selected.path, content: doc.content })}
+                  >
+                    Edit
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* Doc body */}
+            <div style={S.docBody}>
+              {docLoading && (
+                <div style={S.loading}><div className="spin" />Loading document...</div>
+              )}
+              {docError && (
+                <div style={{ padding: 16, color: 'var(--red)', font: '12px var(--sans)' }}>{docError}</div>
+              )}
+              {!docLoading && !docError && doc && (
+                <div style={S.docContent}>
+                  <div dangerouslySetInnerHTML={{ __html: renderMarkdown(doc.content) }} />
+                </div>
+              )}
+            </div>
+          </>
+        ) : (
+          <div style={S.empty}>
+            {treeLoading ? '' : 'Select a document from the sidebar'}
+          </div>
+        )}
+      </div>
+
+      {/* Editor modal */}
+      {editor && (
+        <EditorModal
+          title={'Edit: ' + editor.path.replace(/\\/g, '/').split('/').pop()}
+          content={editor.content}
+          onSave={handleSave}
+          onClose={() => setEditor(null)}
+        />
+      )}
+    </div>
+  );
+}
+// ============================================================
+// Wire up in app.html:
+//
+// 1. Add tab button in nav:
+//    <div className={'tab' + (tab === 'docs' ? ' on' : '')} onClick={() => setTab('docs')}>
+//      Docs
+//    </div>
+//
+// 2. Add panel in render body:
+//    {tab === 'docs' && <ErrorBoundary><DocsTab /></ErrorBoundary>}
+//
+// 3. Add API routes in server.mjs (see docs-browser-api.mjs):
+//    import { getDocTree, readDoc, writeDoc, searchDocs } from './modules/docs-browser-api.mjs'
+//
+//    if (url.pathname === '/api/docs') {
+//      jsonResponse(res, { tree: await getDocTree() }); return
+//    }
+//    if (req.method === 'GET' && url.pathname === '/api/docs/read') {
+//      const path = decodeURIComponent(url.searchParams.get('path') || '')
+//      if (!path) { jsonResponse(res, { error: 'path required' }, 400); return }
+//      try { jsonResponse(res, await readDoc(path)) }
+//      catch (e) { jsonResponse(res, { error: e.message }, 404) }
+//      return
+//    }
+//    if (req.method === 'PUT' && url.pathname === '/api/docs/write') {
+//      const { path, content } = JSON.parse(await readBody(req))
+//      try { jsonResponse(res, await writeDoc(path, content)) }
+//      catch (e) { jsonResponse(res, { error: e.message }, 403) }
+//      return
+//    }
+//    if (url.pathname === '/api/docs/search') {
+//      const q = url.searchParams.get('q') || ''
+//      jsonResponse(res, { results: await searchDocs(q) }); return
+//    }
+// ============================================================

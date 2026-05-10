@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "qmd": {
+      "url": "http://localhost:8181/mcp"
+    },
+    "agentmemory": {
+      "command": "npx",
+      "args": ["-y", "@agentmemory/mcp"],
+      "env": {
+        "AGENTMEMORY_URL": "http://localhost:3111",
+        "AGENTMEMORY_TOOLS": "all"
+      }
+    }
+  }
+}

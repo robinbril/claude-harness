@@ -1,0 +1,429 @@
+// SkillsAgentsTab — paste inside the <script type="text/babel"> block in app.html
+// Depends on: EditorModal (global), useState/useEffect/useCallback/useMemo (global), toast (global), rel (global)
+// API routes needed in server.mjs:
+//   GET  /api/agents                → getAgents() list
+//   GET  /api/agents/:filename      → getAgentContent(filename)
+//   PUT  /api/agents/:filename      → saveAgent(filename, content)
+//   GET  /api/skills                → getSkills() list
+//   GET  /api/skills/:filename      → getSkillContent(filename)
+//   PUT  /api/skills/:filename      → saveSkill(filename, content)
+
+function SkillsAgentsTab() {
+  const [agents, setAgents] = useState([]);
+  const [skills, setSkills] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [q, setQ] = useState('');
+  const [editing, setEditing] = useState(null); // { type: 'agent'|'skill', filename, content }
+  const [expandedAgent, setExpandedAgent] = useState(null);
+  const [expandedSkill, setExpandedSkill] = useState(null);
+  const [agentContent, setAgentContent] = useState({}); // filename -> content
+  const [skillContent, setSkillContent] = useState({});
+  const [loadingContent, setLoadingContent] = useState(null); // filename being loaded
+
+  const load = useCallback(() => {
+    setError(null);
+    Promise.all([
+      fetch('/api/agents').then(r => r.json()),
+      fetch('/api/skills').then(r => r.json()),
+    ])
+      .then(([a, s]) => {
+        setAgents(a.agents || []);
+        setSkills(s.skills || []);
+        setLoading(false);
+      })
+      .catch(err => {
+        setError(err.message || 'Failed to load');
+        setLoading(false);
+      });
+  }, []);
+
+  useEffect(() => { load() }, [load]);
+
+  const openAgentContent = useCallback(async (filename) => {
+    if (agentContent[filename]) {
+      setExpandedAgent(filename);
+      return;
+    }
+    setLoadingContent(filename);
+    try {
+      const r = await fetch('/api/agents/' + encodeURIComponent(filename));
+      const d = await r.json();
+      if (d.content != null) {
+        setAgentContent(prev => ({ ...prev, [filename]: d.content }));
+      }
+    } catch { /* ignore — fall back to card data */ }
+    setExpandedAgent(filename);
+    setLoadingContent(null);
+  }, [agentContent]);
+
+  const openSkillContent = useCallback(async (filename) => {
+    if (skillContent[filename]) {
+      setExpandedSkill(filename);
+      return;
+    }
+    setLoadingContent(filename);
+    try {
+      const r = await fetch('/api/skills/' + encodeURIComponent(filename));
+      const d = await r.json();
+      if (d.content != null) {
+        setSkillContent(prev => ({ ...prev, [filename]: d.content }));
+      }
+    } catch { /* ignore */ }
+    setExpandedSkill(filename);
+    setLoadingContent(null);
+  }, [skillContent]);
+
+  const openAgentEditor = useCallback(async (filename) => {
+    let content = agentContent[filename];
+    if (!content) {
+      try {
+        const r = await fetch('/api/agents/' + encodeURIComponent(filename));
+        const d = await r.json();
+        content = d.content || '';
+        setAgentContent(prev => ({ ...prev, [filename]: content }));
+      } catch { content = '' }
+    }
+    setEditing({ type: 'agent', filename, content });
+  }, [agentContent]);
+
+  const openSkillEditor = useCallback(async (filename) => {
+    let content = skillContent[filename];
+    if (!content) {
+      try {
+        const r = await fetch('/api/skills/' + encodeURIComponent(filename));
+        const d = await r.json();
+        content = d.content || '';
+        setSkillContent(prev => ({ ...prev, [filename]: content }));
+      } catch { content = '' }
+    }
+    setEditing({ type: 'skill', filename, content });
+  }, [skillContent]);
+
+  const saveEditing = useCallback(async (newContent) => {
+    if (!editing) return;
+    const url = editing.type === 'agent'
+      ? '/api/agents/' + encodeURIComponent(editing.filename)
+      : '/api/skills/' + encodeURIComponent(editing.filename);
+    const r = await fetch(url, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content: newContent }),
+    });
+    if (!r.ok) {
+      const d = await r.json().catch(() => ({}));
+      throw new Error(d.error || 'Save failed');
+    }
+    if (editing.type === 'agent') {
+      setAgentContent(prev => ({ ...prev, [editing.filename]: newContent }));
+    } else {
+      setSkillContent(prev => ({ ...prev, [editing.filename]: newContent }));
+    }
+    load();
+  }, [editing, load]);
+
+  const filteredAgents = useMemo(() => {
+    if (!q.trim()) return agents;
+    const lq = q.toLowerCase();
+    return agents.filter(a =>
+      a.name.toLowerCase().includes(lq) ||
+      (a.description || '').toLowerCase().includes(lq) ||
+      (a.model || '').toLowerCase().includes(lq) ||
+      (a.tools || []).some(t => t.toLowerCase().includes(lq))
+    );
+  }, [agents, q]);
+
+  const filteredSkills = useMemo(() => {
+    if (!q.trim()) return skills;
+    const lq = q.toLowerCase();
+    return skills.filter(s =>
+      s.name.toLowerCase().includes(lq) ||
+      (s.description || '').toLowerCase().includes(lq) ||
+      (s.allowedTools || []).some(t => t.toLowerCase().includes(lq))
+    );
+  }, [skills, q]);
+
+  if (loading) return (
+    <div className="page">
+      <div className="loading"><div className="spin" />Loading agents and skills...</div>
+    </div>
+  );
+
+  if (error) return (
+    <div className="page">
+      <div style={{ background: 'var(--red-bg)', border: '1px solid var(--red)', borderRadius: 'var(--r)', padding: '12px 16px', color: 'var(--red)', fontSize: 13 }}>
+        {error}
+        <button className="btn btn-g" style={{ marginLeft: 12 }} onClick={load}>Retry</button>
+      </div>
+    </div>
+  );
+
+  return (
+    <div className="page">
+      {editing && (
+        <EditorModal
+          title={editing.filename}
+          content={editing.content}
+          onSave={saveEditing}
+          onClose={() => setEditing(null)}
+        />
+      )}
+
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: 16 }}>
+        <div>
+          <h2>Agents &amp; Skills</h2>
+          <div className="sub">
+            {agents.length} agent{agents.length !== 1 ? 's' : ''} in ~/.claude/agents/ &nbsp;&bull;&nbsp;
+            {skills.length} skill{skills.length !== 1 ? 's' : ''} in ~/.claude/commands/
+          </div>
+        </div>
+        <button className="btn btn-g" onClick={load}>Refresh</button>
+      </div>
+
+      <div style={{ marginBottom: 16 }}>
+        <input
+          className="input"
+          style={{ maxWidth: 360 }}
+          placeholder="Filter agents and skills..."
+          value={q}
+          onChange={e => setQ(e.target.value)}
+        />
+        {q && (
+          <span style={{ marginLeft: 8, fontSize: 11, color: 'var(--t3)' }}>
+            {filteredAgents.length + filteredSkills.length} matches
+          </span>
+        )}
+      </div>
+
+      {/* ── Agents ── */}
+      <div className="section">
+        <h3 style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 10 }}>
+          <span style={{ fontSize: 13, background: 'var(--pri-bg)', color: 'var(--pri)', borderRadius: 4, padding: '1px 6px' }}>Agents</span>
+          <span style={{ fontSize: 11, color: 'var(--t4)', fontWeight: 400 }}>{filteredAgents.length}</span>
+        </h3>
+
+        {filteredAgents.length === 0 ? (
+          <div className="empty" style={{ padding: '20px 0', textAlign: 'left' }}>
+            {q ? 'No agents match "' + q + '"' : 'No agent files found in ~/.claude/agents/'}
+          </div>
+        ) : (
+          <div className="h-grid">
+            {filteredAgents.map(agent => {
+              const isExpanded = expandedAgent === agent.filename;
+              const isLoadingThis = loadingContent === agent.filename;
+              const body = agentContent[agent.filename];
+              return (
+                <div key={agent.filename} className="card" style={{ padding: 0, overflow: 'hidden' }}>
+                  <div
+                    className="h-item"
+                    style={{ padding: '10px 12px', cursor: 'pointer' }}
+                    onClick={() => {
+                      if (isExpanded) {
+                        setExpandedAgent(null);
+                      } else {
+                        openAgentContent(agent.filename);
+                      }
+                    }}
+                  >
+                    <div className="h-icon" style={{ background: 'var(--pri-bg)', color: 'var(--pri)', fontSize: 15 }}>
+                      &#129302;
+                    </div>
+                    <div className="h-info">
+                      <div className="h-name">{agent.name}</div>
+                      <div className="h-desc" style={{ marginTop: 2 }}>
+                        {agent.description || <span style={{ color: 'var(--t4)', fontStyle: 'italic' }}>no description</span>}
+                      </div>
+                      <div style={{ display: 'flex', gap: 5, marginTop: 4, flexWrap: 'wrap', alignItems: 'center' }}>
+                        {agent.model && (
+                          <span style={{ fontSize: 10, padding: '1px 5px', borderRadius: 4, background: 'var(--grn-bg)', color: 'var(--grn)', fontFamily: 'var(--mono)' }}>
+                            {agent.model}
+                          </span>
+                        )}
+                        {agent.tools.length > 0 && (
+                          <span style={{ fontSize: 10, color: 'var(--t4)' }}>
+                            {agent.tools.length} tool{agent.tools.length !== 1 ? 's' : ''}
+                          </span>
+                        )}
+                        <span style={{ fontSize: 10, color: 'var(--t4)', marginLeft: 'auto' }}>
+                          {(agent.sizeBytes / 1024).toFixed(1)}KB &middot; {rel(agent.modifiedAt)}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {agent.tools.length > 0 && (
+                    <div style={{ padding: '0 12px 8px 50px', display: 'flex', flexWrap: 'wrap', gap: 3 }}>
+                      {agent.tools.map(t => (
+                        <span key={t} style={{ fontSize: 10, padding: '1px 5px', borderRadius: 4, background: 'var(--input)', color: 'var(--t3)', border: '1px solid var(--border)', fontFamily: 'var(--mono)' }}>
+                          {t}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+
+                  {isExpanded && (
+                    <div style={{ borderTop: '1px solid var(--border)' }}>
+                      {isLoadingThis ? (
+                        <div className="loading" style={{ padding: '12px 16px', justifyContent: 'flex-start' }}>
+                          <div className="spin" /><span>Loading...</span>
+                        </div>
+                      ) : body ? (
+                        <pre style={{ padding: '10px 14px', fontSize: 11, fontFamily: 'var(--mono)', color: 'var(--t2)', whiteSpace: 'pre-wrap', lineHeight: 1.6, maxHeight: 280, overflowY: 'auto', background: 'var(--bg)' }}>
+                          {body}
+                        </pre>
+                      ) : (
+                        <div style={{ padding: '10px 14px', fontSize: 12, color: 'var(--t4)' }}>No content loaded.</div>
+                      )}
+                      <div style={{ padding: '6px 12px', borderTop: '1px solid var(--border)', display: 'flex', justifyContent: 'flex-end' }}>
+                        <button className="btn btn-p" style={{ fontSize: 11, padding: '4px 10px' }} onClick={() => openAgentEditor(agent.filename)}>
+                          Edit
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* ── Skills / Commands ── */}
+      <div className="section" style={{ marginTop: 10 }}>
+        <h3 style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 10 }}>
+          <span style={{ fontSize: 13, background: 'var(--grn-bg)', color: 'var(--grn)', borderRadius: 4, padding: '1px 6px' }}>Skills / Commands</span>
+          <span style={{ fontSize: 11, color: 'var(--t4)', fontWeight: 400 }}>{filteredSkills.length}</span>
+        </h3>
+
+        {filteredSkills.length === 0 ? (
+          <div className="empty" style={{ padding: '20px 0', textAlign: 'left' }}>
+            {q ? 'No skills match "' + q + '"' : 'No command files found in ~/.claude/commands/'}
+          </div>
+        ) : (
+          <div className="h-grid">
+            {filteredSkills.map(skill => {
+              const isExpanded = expandedSkill === skill.filename;
+              const isLoadingThis = loadingContent === skill.filename;
+              const body = skillContent[skill.filename];
+              return (
+                <div key={skill.filename} className="card" style={{ padding: 0, overflow: 'hidden' }}>
+                  <div
+                    className="h-item"
+                    style={{ padding: '10px 12px', cursor: 'pointer' }}
+                    onClick={() => {
+                      if (isExpanded) {
+                        setExpandedSkill(null);
+                      } else {
+                        openSkillContent(skill.filename);
+                      }
+                    }}
+                  >
+                    <div className="h-icon" style={{ background: 'var(--grn-bg)', color: 'var(--grn)', fontSize: 14, fontWeight: 700 }}>
+                      /
+                    </div>
+                    <div className="h-info">
+                      <div className="h-name">/{skill.name}</div>
+                      <div className="h-desc" style={{ marginTop: 2 }}>
+                        {skill.description || <span style={{ color: 'var(--t4)', fontStyle: 'italic' }}>no description</span>}
+                      </div>
+                      <div style={{ display: 'flex', gap: 5, marginTop: 4, alignItems: 'center' }}>
+                        {skill.allowedTools.length > 0 && (
+                          <span style={{ fontSize: 10, color: 'var(--t4)' }}>
+                            {skill.allowedTools.length} allowed tool{skill.allowedTools.length !== 1 ? 's' : ''}
+                          </span>
+                        )}
+                        <span style={{ fontSize: 10, color: 'var(--t4)', marginLeft: 'auto' }}>
+                          {(skill.sizeBytes / 1024).toFixed(1)}KB &middot; {rel(skill.modifiedAt)}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {skill.allowedTools.length > 0 && (
+                    <div style={{ padding: '0 12px 8px 50px', display: 'flex', flexWrap: 'wrap', gap: 3 }}>
+                      {skill.allowedTools.map(t => (
+                        <span key={t} style={{ fontSize: 10, padding: '1px 5px', borderRadius: 4, background: 'var(--input)', color: 'var(--grn)', border: '1px solid var(--border)', fontFamily: 'var(--mono)' }}>
+                          {t}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+
+                  {isExpanded && (
+                    <div style={{ borderTop: '1px solid var(--border)' }}>
+                      {isLoadingThis ? (
+                        <div className="loading" style={{ padding: '12px 16px', justifyContent: 'flex-start' }}>
+                          <div className="spin" /><span>Loading...</span>
+                        </div>
+                      ) : body ? (
+                        <pre style={{ padding: '10px 14px', fontSize: 11, fontFamily: 'var(--mono)', color: 'var(--t2)', whiteSpace: 'pre-wrap', lineHeight: 1.6, maxHeight: 280, overflowY: 'auto', background: 'var(--bg)' }}>
+                          {body}
+                        </pre>
+                      ) : (
+                        <div style={{ padding: '10px 14px', fontSize: 12, color: 'var(--t4)' }}>No content loaded.</div>
+                      )}
+                      <div style={{ padding: '6px 12px', borderTop: '1px solid var(--border)', display: 'flex', justifyContent: 'flex-end' }}>
+                        <button className="btn btn-p" style={{ fontSize: 11, padding: '4px 10px' }} onClick={() => openSkillEditor(skill.filename)}>
+                          Edit
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── Integration notes ──────────────────────────────────────────────────────────
+//
+// 1. Add the API module to server.mjs:
+//
+//    import { getAgents, getSkills, getAgentContent, saveAgent, getSkillContent, saveSkill }
+//      from './modules/skills-agents-api.mjs'
+//
+// 2. Add these routes in the server.mjs request handler (before the HTML fallback):
+//
+//    if (url.pathname === '/api/agents' && req.method === 'GET') {
+//      jsonResponse(res, { agents: getAgents() }); return
+//    }
+//    const agentFileMatch = url.pathname.match(/^\/api\/agents\/(.+\.md)$/)
+//    if (agentFileMatch && req.method === 'GET') {
+//      const content = getAgentContent(decodeURIComponent(agentFileMatch[1]))
+//      if (!content) { jsonResponse(res, { error: 'Not found' }, 404); return }
+//      jsonResponse(res, { filename: decodeURIComponent(agentFileMatch[1]), content }); return
+//    }
+//    if (agentFileMatch && req.method === 'PUT') {
+//      const body = JSON.parse(await readBody(req))
+//      try { saveAgent(decodeURIComponent(agentFileMatch[1]), body.content) } catch (e) { jsonResponse(res, { error: e.message }, 400); return }
+//      jsonResponse(res, { ok: true }); return
+//    }
+//    if (url.pathname === '/api/skills' && req.method === 'GET') {
+//      jsonResponse(res, { skills: getSkills() }); return
+//    }
+//    const skillFileMatch = url.pathname.match(/^\/api\/skills\/(.+\.md)$/)
+//    if (skillFileMatch && req.method === 'GET') {
+//      const content = getSkillContent(decodeURIComponent(skillFileMatch[1]))
+//      if (!content) { jsonResponse(res, { error: 'Not found' }, 404); return }
+//      jsonResponse(res, { filename: decodeURIComponent(skillFileMatch[1]), content }); return
+//    }
+//    if (skillFileMatch && req.method === 'PUT') {
+//      const body = JSON.parse(await readBody(req))
+//      try { saveSkill(decodeURIComponent(skillFileMatch[1]), body.content) } catch (e) { jsonResponse(res, { error: e.message }, 400); return }
+//      jsonResponse(res, { ok: true }); return
+//    }
+//
+// 3. Add 'skills' tab to the App tabs array in app.html:
+//
+//    { k: 'skills', l: 'Skills', n: agents.length + skills.length }
+//
+// 4. Add the render branch inside App's <ErrorBoundary>:
+//
+//    {tab === 'skills' && <SkillsAgentsTab />}
+//
+// 5. Update the App useEffect to also fetch agent/skill counts for the nav badge:
+//    (optional — counts can be derived from existing harness summary data)

@@ -1,0 +1,377 @@
+// SystemTab — paste inside the <script type="text/babel"> block in app.html
+// Depends on: useState/useEffect/useCallback (global React hooks)
+// CSS vars used: --bg, --card, --border, --pri, --grn, --amb, --red, --mono, --sans, --t1--t4
+// API routes needed in server.mjs:
+//   GET /api/system/health    → getSystemHealth()
+//   GET /api/system/config    → getClaudeConfig()
+//   GET /api/system/projects  → getProjectStats()
+
+// ---------------------------------------------------------------------------
+// Inline styles (CSS-variable-based, no Tailwind/external)
+// ---------------------------------------------------------------------------
+
+const S = {
+  page: { padding: '20px', fontFamily: 'var(--sans)', color: 'var(--t1)' },
+  header: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '20px', borderBottom: '1px solid var(--border)', paddingBottom: '14px' },
+  title: { margin: 0, fontSize: '20px', fontWeight: 700, color: 'var(--t1)' },
+  subtitle: { margin: '4px 0 0', fontSize: '13px', color: 'var(--t3)' },
+  refreshBtn: { padding: '6px 14px', fontSize: '12px', fontFamily: 'var(--sans)', background: 'color-mix(in srgb, var(--pri) 15%, transparent)', color: 'var(--pri)', border: '1px solid color-mix(in srgb, var(--pri) 30%, transparent)', borderRadius: '6px', cursor: 'pointer' },
+
+  section: { marginBottom: '24px' },
+  sectionTitle: { fontSize: '11px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--t3)', marginBottom: '10px' },
+
+  grid: (cols) => ({ display: 'grid', gridTemplateColumns: `repeat(${cols}, 1fr)`, gap: '10px' }),
+  card: { background: 'var(--card)', border: '1px solid var(--border)', borderRadius: '8px', padding: '14px' },
+  cardLabel: { fontSize: '11px', color: 'var(--t3)', marginBottom: '4px' },
+  cardValue: { fontSize: '18px', fontWeight: 700, color: 'var(--t1)' },
+  cardSub: { fontSize: '11px', color: 'var(--t3)', marginTop: '2px' },
+
+  badge: (color) => ({
+    display: 'inline-flex', alignItems: 'center', gap: '4px',
+    padding: '2px 8px', borderRadius: '999px', fontSize: '11px', fontWeight: 500,
+    background: `color-mix(in srgb, var(--${color}) 15%, transparent)`,
+    color: `var(--${color})`,
+    border: `1px solid color-mix(in srgb, var(--${color}) 30%, transparent)`,
+  }),
+  dot: (color) => ({ width: '7px', height: '7px', borderRadius: '50%', background: `var(--${color})`, display: 'inline-block' }),
+
+  table: { width: '100%', borderCollapse: 'collapse', fontSize: '12px' },
+  th: { padding: '6px 10px', textAlign: 'left', fontSize: '10px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.07em', color: 'var(--t3)', borderBottom: '1px solid var(--border)' },
+  td: { padding: '7px 10px', borderBottom: '1px solid color-mix(in srgb, var(--border) 50%, transparent)', color: 'var(--t2)', verticalAlign: 'middle' },
+
+  mono: { fontFamily: 'var(--mono)', fontSize: '11px' },
+  pre: { background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: '6px', padding: '12px', fontFamily: 'var(--mono)', fontSize: '11px', color: 'var(--t2)', overflow: 'auto', maxHeight: '360px', whiteSpace: 'pre', lineHeight: '1.55' },
+
+  bar: { height: '14px', borderRadius: '3px', minWidth: '4px', transition: 'width 0.3s ease' },
+  barRow: { display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' },
+  barLabel: { width: '130px', fontSize: '11px', color: 'var(--t2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flexShrink: 0 },
+  barTrack: { flex: 1, background: 'color-mix(in srgb, var(--border) 60%, transparent)', borderRadius: '3px', height: '14px', overflow: 'hidden' },
+  barSize: { width: '60px', fontSize: '11px', color: 'var(--t3)', textAlign: 'right', flexShrink: 0 },
+
+  error: { background: 'color-mix(in srgb, var(--red) 12%, transparent)', border: '1px solid color-mix(in srgb, var(--red) 25%, transparent)', borderRadius: '6px', padding: '10px 14px', fontSize: '12px', color: 'var(--red)' },
+  spinner: { display: 'inline-block', width: '14px', height: '14px', border: '2px solid var(--border)', borderTopColor: 'var(--pri)', borderRadius: '50%', animation: 'spin 0.7s linear infinite', marginRight: '8px' },
+  collapseTrigger: { background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'var(--sans)', color: 'var(--t2)', fontSize: '12px', padding: '0', display: 'flex', alignItems: 'center', gap: '6px' },
+};
+
+const BAR_COLORS = ['pri', 'grn', 'amb', 'red', 'pri', 'grn', 'amb'];
+
+// ---------------------------------------------------------------------------
+// Small sub-components
+// ---------------------------------------------------------------------------
+
+function Spinner() {
+  return React.createElement('span', { style: S.spinner });
+}
+
+function LoadingState({ label }) {
+  return React.createElement('div', { style: { display: 'flex', alignItems: 'center', padding: '20px 0', color: 'var(--t3)', fontSize: '13px' } },
+    React.createElement(Spinner),
+    label || 'Loading...'
+  );
+}
+
+function ErrorState({ message }) {
+  return React.createElement('div', { style: S.error }, 'Error: ' + message);
+}
+
+function StatCard({ label, value, sub, accent }) {
+  return React.createElement('div', { style: S.card },
+    React.createElement('div', { style: S.cardLabel }, label),
+    React.createElement('div', { style: { ...S.cardValue, color: accent ? `var(--${accent})` : 'var(--t1)' } }, value),
+    sub && React.createElement('div', { style: S.cardSub }, sub)
+  );
+}
+
+function Badge({ color, children }) {
+  return React.createElement('span', { style: S.badge(color) }, children);
+}
+
+function DiskBar({ breakdown }) {
+  if (!breakdown || breakdown.length === 0) return null;
+  const max = breakdown[0].bytes;
+
+  return React.createElement('div', null,
+    breakdown.slice(0, 12).map((entry, i) => {
+      const pct = max > 0 ? Math.max(2, (entry.bytes / max) * 100) : 2;
+      const color = BAR_COLORS[i % BAR_COLORS.length];
+      return React.createElement('div', { key: entry.name, style: S.barRow },
+        React.createElement('div', { style: S.barLabel, title: entry.name }, entry.name),
+        React.createElement('div', { style: S.barTrack },
+          React.createElement('div', { style: { ...S.bar, width: pct + '%', background: `var(--${color})`, opacity: 0.7 } })
+        ),
+        React.createElement('div', { style: S.barSize }, entry.formatted)
+      );
+    })
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Collapsible JSON viewer
+// ---------------------------------------------------------------------------
+
+function JsonViewer({ data, label }) {
+  const [open, setOpen] = useState(false);
+  const text = JSON.stringify(data, null, 2);
+
+  return React.createElement('div', null,
+    React.createElement('button', {
+      style: S.collapseTrigger,
+      onClick: () => setOpen(o => !o),
+    },
+      React.createElement('span', { style: { fontSize: '10px' } }, open ? '▼' : '▶'),
+      label || 'View JSON',
+      React.createElement('span', { style: { fontSize: '10px', color: 'var(--t3)' } }, `(${text.length} chars)`)
+    ),
+    open && React.createElement('pre', { style: { ...S.pre, marginTop: '8px' } }, text)
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Health section
+// ---------------------------------------------------------------------------
+
+function HealthSection({ health }) {
+  if (!health) return null;
+
+  const { node, memory, disk, sessions, projects, claudeProcesses } = health;
+
+  const uptime = node.serverUptimeMs;
+  const uptimeFmt = uptime < 60000
+    ? `${Math.floor(uptime / 1000)}s`
+    : uptime < 3600000
+      ? `${Math.floor(uptime / 60000)}m`
+      : `${Math.floor(uptime / 3600000)}h ${Math.floor((uptime % 3600000) / 60000)}m`;
+
+  const osUptimeHrs = Math.floor(node.osUptime / 3600);
+  const osUptimeFmt = osUptimeHrs > 24
+    ? `${Math.floor(osUptimeHrs / 24)}d ${osUptimeHrs % 24}h`
+    : `${osUptimeHrs}h`;
+
+  return React.createElement('div', { style: S.section },
+    React.createElement('div', { style: S.sectionTitle }, 'System Health'),
+    React.createElement('div', { style: S.grid(4) },
+      React.createElement(StatCard, { label: 'Node.js', value: node.version, sub: node.platform }),
+      React.createElement(StatCard, { label: 'Server Uptime', value: uptimeFmt, sub: `OS: ${osUptimeFmt}` }),
+      React.createElement(StatCard, {
+        label: 'Claude Processes',
+        value: claudeProcesses.count,
+        sub: claudeProcesses.running ? 'running' : 'none found',
+        accent: claudeProcesses.running ? 'grn' : 'amb',
+      }),
+      React.createElement(StatCard, { label: 'Project Dirs', value: projects.count }),
+    ),
+    React.createElement('div', { style: { ...S.grid(4), marginTop: '10px' } },
+      React.createElement(StatCard, { label: 'Memory (RSS)', value: memory.rssFmt, sub: `Heap: ${memory.heapUsedFmt}` }),
+      React.createElement(StatCard, { label: 'JSONL Sessions', value: sessions.jsonlCount, sub: sessions.jsonlFmt }),
+      React.createElement(StatCard, { label: '.claude Disk', value: disk.totalFmt }),
+      React.createElement('div', { style: { ...S.card, display: 'flex', alignItems: 'center', gap: '6px' } },
+        React.createElement('div', null,
+          React.createElement('div', { style: S.cardLabel }, 'Process Memory'),
+          React.createElement('div', { style: S.cardSub }, `heap ${memory.heapUsedFmt} / ${memory.heapUsedFmt}`),
+          React.createElement('div', { style: { marginTop: '6px', height: '6px', borderRadius: '3px', background: 'var(--border)', overflow: 'hidden' } },
+            React.createElement('div', { style: { height: '100%', width: `${Math.min(100, (memory.heapUsed / memory.heapTotal) * 100).toFixed(1)}%`, background: 'var(--pri)', borderRadius: '3px', transition: 'width 0.3s' } })
+          )
+        )
+      ),
+    )
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Disk section
+// ---------------------------------------------------------------------------
+
+function DiskSection({ health }) {
+  if (!health) return null;
+  const { disk } = health;
+
+  return React.createElement('div', { style: S.section },
+    React.createElement('div', { style: S.sectionTitle }, `Disk Usage — ${disk.totalFmt} total`),
+    React.createElement('div', { style: S.card },
+      React.createElement(DiskBar, { breakdown: disk.breakdown })
+    )
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Projects section
+// ---------------------------------------------------------------------------
+
+function ProjectsSection({ projects }) {
+  if (!projects || projects.length === 0) {
+    return React.createElement('div', { style: S.section },
+      React.createElement('div', { style: S.sectionTitle }, 'Projects'),
+      React.createElement('div', { style: { ...S.card, color: 'var(--t3)', fontSize: '13px' } }, 'No project directories found.')
+    );
+  }
+
+  return React.createElement('div', { style: S.section },
+    React.createElement('div', { style: S.sectionTitle }, `Projects (${projects.length})`),
+    React.createElement('div', { style: S.card },
+      React.createElement('table', { style: S.table },
+        React.createElement('thead', null,
+          React.createElement('tr', null,
+            React.createElement('th', { style: S.th }, 'Project'),
+            React.createElement('th', { style: S.th }, 'Sessions'),
+            React.createElement('th', { style: S.th }, 'Size'),
+            React.createElement('th', { style: S.th }, 'Last Modified'),
+          )
+        ),
+        React.createElement('tbody', null,
+          projects.map(p => {
+            const displayName = p.decodedPath.split('/').filter(Boolean).pop() || p.name;
+            const relPath = p.decodedPath.replace(/\\/g, '/').replace(/^\/+/, '');
+            const date = new Date(p.lastModified);
+            const dateFmt = date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: '2-digit' });
+
+            return React.createElement('tr', { key: p.name, style: { transition: 'background 0.15s' }, onMouseEnter: e => e.currentTarget.style.background = 'color-mix(in srgb, var(--pri) 5%, transparent)', onMouseLeave: e => e.currentTarget.style.background = '' },
+              React.createElement('td', { style: S.td },
+                React.createElement('div', { style: { fontWeight: 500, color: 'var(--t1)', fontSize: '12px' } }, displayName),
+                React.createElement('div', { style: { ...S.mono, color: 'var(--t4)', fontSize: '10px', marginTop: '2px' } }, relPath),
+              ),
+              React.createElement('td', { style: S.td },
+                React.createElement('span', { style: S.badge(p.sessionCount > 0 ? 'pri' : 'amb') }, p.sessionCount)
+              ),
+              React.createElement('td', { style: { ...S.td, ...S.mono } }, p.sessionCount > 0 ? p.totalFmt : '—'),
+              React.createElement('td', { style: { ...S.td, color: 'var(--t3)', fontSize: '11px' } }, dateFmt),
+            );
+          })
+        )
+      )
+    )
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Config section
+// ---------------------------------------------------------------------------
+
+function ConfigSection({ config }) {
+  if (!config) return null;
+
+  const { config: cfg, sources } = config;
+
+  const hookCount = cfg.hooks
+    ? Object.values(cfg.hooks).reduce((n, arr) => n + (Array.isArray(arr) ? arr.reduce((m, e) => m + (e.hooks ? e.hooks.length : 0), 0) : 0), 0)
+    : 0;
+
+  const allowCount = cfg.permissions?.allow?.length || 0;
+  const denyCount = cfg.permissions?.deny?.length || 0;
+
+  return React.createElement('div', { style: S.section },
+    React.createElement('div', { style: S.sectionTitle }, 'Claude Code Config'),
+    React.createElement('div', { style: S.card },
+      React.createElement('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '14px' } },
+        React.createElement(Badge, { color: sources.main ? 'grn' : 'red' }, sources.main ? 'settings.json' : 'settings.json missing'),
+        React.createElement(Badge, { color: sources.local ? 'grn' : 'amb' }, sources.local ? 'settings.local.json' : 'no local overrides'),
+        cfg.model && React.createElement(Badge, { color: 'pri' }, 'model: ' + cfg.model),
+        cfg.effortLevel && React.createElement(Badge, { color: 'amb' }, 'effort: ' + cfg.effortLevel),
+        hookCount > 0 && React.createElement(Badge, { color: 'grn' }, hookCount + ' hooks'),
+        allowCount > 0 && React.createElement(Badge, { color: 'grn' }, allowCount + ' allowed'),
+        denyCount > 0 && React.createElement(Badge, { color: 'red' }, denyCount + ' denied'),
+      ),
+      React.createElement(JsonViewer, { data: cfg, label: 'Full config' })
+    )
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Claude Processes detail
+// ---------------------------------------------------------------------------
+
+function ProcessesSection({ health }) {
+  if (!health || !health.claudeProcesses.running) return null;
+  const { processes } = health.claudeProcesses;
+
+  return React.createElement('div', { style: S.section },
+    React.createElement('div', { style: S.sectionTitle }, `Claude Processes (${processes.length})`),
+    React.createElement('div', { style: S.card },
+      React.createElement('table', { style: S.table },
+        React.createElement('thead', null,
+          React.createElement('tr', null,
+            React.createElement('th', { style: S.th }, 'PID'),
+            React.createElement('th', { style: S.th }, 'Name'),
+            React.createElement('th', { style: S.th }, 'Memory'),
+          )
+        ),
+        React.createElement('tbody', null,
+          processes.slice(0, 20).map(p =>
+            React.createElement('tr', { key: p.pid },
+              React.createElement('td', { style: { ...S.td, ...S.mono } }, p.pid),
+              React.createElement('td', { style: S.td }, p.name),
+              React.createElement('td', { style: { ...S.td, ...S.mono } }, p.memKb > 0 ? `${(p.memKb / 1024).toFixed(0)} MB` : '—'),
+            )
+          )
+        )
+      )
+    )
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Main SystemTab
+// ---------------------------------------------------------------------------
+
+function SystemTab() {
+  const [health, setHealth] = useState(null);
+  const [config, setConfig] = useState(null);
+  const [projects, setProjects] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+
+  const load = useCallback(() => {
+    setLoading(true);
+    setError(null);
+
+    Promise.all([
+      fetch('/api/system/health').then(r => r.json()),
+      fetch('/api/system/config').then(r => r.json()),
+      fetch('/api/system/projects').then(r => r.json()),
+    ])
+      .then(([h, c, p]) => {
+        setHealth(h);
+        setConfig(c);
+        setProjects(Array.isArray(p) ? p : p.projects || []);
+        setLoading(false);
+      })
+      .catch(err => {
+        setError(err.message || 'Failed to load system data');
+        setLoading(false);
+      });
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  return React.createElement('div', { style: S.page },
+    // ---- Header ----
+    React.createElement('div', { style: S.header },
+      React.createElement('div', null,
+        React.createElement('h2', { style: S.title }, 'System Overview'),
+        React.createElement('p', { style: S.subtitle }, 'Claude Code health, configuration, and disk usage'),
+      ),
+      React.createElement('button', {
+        style: loading ? { ...S.refreshBtn, opacity: 0.6, cursor: 'default' } : S.refreshBtn,
+        onClick: loading ? undefined : load,
+        disabled: loading,
+      }, loading ? 'Refreshing...' : 'Refresh')
+    ),
+
+    // ---- Spinner injection (CSS keyframes) ----
+    React.createElement('style', null, '@keyframes spin { from { transform: rotate(0deg) } to { transform: rotate(360deg) } }'),
+
+    // ---- Error ----
+    error && React.createElement(ErrorState, { message: error }),
+
+    // ---- Loading ----
+    loading && React.createElement(LoadingState, { label: 'Loading system data...' }),
+
+    // ---- Content ----
+    !loading && !error && React.createElement('div', null,
+      React.createElement(HealthSection, { health }),
+      React.createElement(DiskSection, { health }),
+      React.createElement(ProjectsSection, { projects }),
+      React.createElement(ConfigSection, { config }),
+      React.createElement(ProcessesSection, { health }),
+    )
+  );
+}

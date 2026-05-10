@@ -1,0 +1,30 @@
+{
+  "Project A": {
+    "model": "claude-sonnet-4-6",
+    "agent": "feature-builder.md",
+    "skills": {
+      "work.md": true,
+      "review.md": true
+    },
+    "memory": {},
+    "subagents": {},
+    "subSkills": {},
+    "modules": {},
+    "moduleSettings": {},
+    "savedAt": "2026-01-01T00:00:00.000Z"
+  },
+  "Project B": {
+    "model": "claude-opus-4-6",
+    "agent": "refactor-lead.md",
+    "skills": {
+      "review.md": true,
+      "audit.md": true
+    },
+    "memory": {},
+    "subagents": {},
+    "subSkills": {},
+    "modules": {},
+    "moduleSettings": {},
+    "savedAt": "2026-01-01T00:00:00.000Z"
+  }
+}

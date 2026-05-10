@@ -1,0 +1,41 @@
+node_modules/
+*.log
+.DS_Store
+.env
+.env.local
+.env.*.local
+
+# Local data / runtime
+session-browser/data/
+session-browser/.data/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.db
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*~
+
+# OS
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Build output
+dist/
+build/
+.next/
+.cache/
+
+# Coverage
+coverage/
+.nyc_output/
+
+# Personal user data — never commit
+projects/
+sessions/
+*.jsonl
+backups/

@@ -1,0 +1,307 @@
+/*
+CSS CLASSES — add these to the <style> block in app.html
+
+.lv { display: flex; flex: 1; overflow: hidden }
+.lv-sidebar { width: 220px; background: var(--card); border-right: 1px solid var(--border); display: flex; flex-direction: column; flex-shrink: 0 }
+.lv-sidebar-head { padding: 10px 12px 6px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center }
+.lv-sidebar-head h3 { font: 500 9px var(--sans); text-transform: uppercase; letter-spacing: .1em; color: var(--t4) }
+.lv-file-list { flex: 1; overflow-y: auto; padding: 6px 0 }
+.lv-file { padding: 6px 12px; cursor: pointer; transition: background .06s }
+.lv-file:hover { background: var(--hover) }
+.lv-file.on { background: var(--pri-bg) }
+.lv-file-name { font: 500 11px var(--sans); color: var(--t1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-bottom: 1px }
+.lv-file.on .lv-file-name { color: var(--pri) }
+.lv-file-meta { font: 10px var(--mono); color: var(--t4); display: flex; gap: 6px }
+.lv-main { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-width: 0 }
+.lv-toolbar { padding: 7px 12px; display: flex; gap: 6px; align-items: center; border-bottom: 1px solid var(--border); background: var(--card); flex-wrap: wrap }
+.lv-toolbar label { font: 500 10px var(--sans); color: var(--t3) }
+.lv-select { background: var(--input); border: 1px solid var(--border); border-radius: 5px; padding: 4px 7px; font: 11px var(--sans); color: var(--t1); outline: none; cursor: pointer }
+.lv-select:focus { border-color: var(--pri) }
+.lv-search { background: var(--input); border: 1px solid var(--border); border-radius: 5px; padding: 4px 8px; font: 11px var(--sans); color: var(--t1); outline: none; width: 180px }
+.lv-search:focus { border-color: var(--pri) }
+.lv-search::placeholder { color: var(--t4) }
+.lv-toggle { background: var(--input); border: 1px solid var(--border); border-radius: 5px; padding: 4px 8px; font: 500 10px var(--sans); color: var(--t2); cursor: pointer; transition: all .1s; white-space: nowrap }
+.lv-toggle.on { background: var(--grn-bg); border-color: var(--grn); color: var(--grn) }
+.lv-toggle:hover { border-color: var(--border-h) }
+.lv-status { padding: 3px 12px; font: 10px var(--mono); color: var(--t4); border-bottom: 1px solid var(--border); background: var(--card); display: flex; gap: 10px; align-items: center }
+.lv-output { flex: 1; overflow-y: auto; padding: 10px 14px; font: 11px/1.6 var(--mono); color: #C9D1D9; background: #0D1117 }
+.lv-line { display: flex; gap: 8px; padding: 1px 0; border-radius: 2px }
+.lv-line:hover { background: rgba(255,255,255,.04) }
+.lv-line-num { color: #484F58; user-select: none; min-width: 44px; text-align: right; flex-shrink: 0; font-size: 10px; padding-top: 1px }
+.lv-line-text { flex: 1; word-break: break-all; white-space: pre-wrap }
+.lv-match mark { background: rgba(255,214,0,.25); color: #FFD700; border-radius: 2px; padding: 0 1px }
+.lv-empty { display: flex; align-items: center; justify-content: center; height: 100%; color: #484F58; font-size: 12px; background: #0D1117 }
+.lv-err { color: var(--red); padding: 4px 0 }
+.lv-search-results { padding: 6px 12px; border-bottom: 1px solid var(--border); background: var(--card); font: 10px var(--sans); color: var(--t3) }
+.lv-search-results b { color: var(--t1) }
+*/
+
+// ============================================================
+// LogViewerTab component
+// Usage in app.html: replace the function body below with this
+// content inside a function LogViewerTab() { ... }
+//
+// Prerequisites (already available globally in app.html):
+//   const { useState, useEffect, useCallback, useRef } = React;
+//   fetch() for /api/logs and /api/logs/:filename?lines=N&search=Q
+// ============================================================
+
+function LogViewerTab() {
+  const [files, setFiles] = useState([]);
+  const [selected, setSelected] = useState(null);
+  const [lineCount, setLineCount] = useState(100);
+  const [search, setSearch] = useState('');
+  const [autoRefresh, setAutoRefresh] = useState(false);
+  const [content, setContent] = useState(null);  // { lines, totalLines, truncated } | { matches, totalMatches, capped }
+  const [loading, setLoading] = useState(false);
+  const [filesLoading, setFilesLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [lastRefresh, setLastRefresh] = useState(null);
+  const outputRef = useRef(null);
+  const intervalRef = useRef(null);
+  const searchInput = search.trim();
+
+  // ----------------------------------------------------------------
+  // Fetch file list on mount
+  // ----------------------------------------------------------------
+  useEffect(() => {
+    setFilesLoading(true);
+    fetch('/api/logs')
+      .then(r => r.json())
+      .then(data => {
+        const list = data.files || [];
+        setFiles(list);
+        if (list.length > 0 && !selected) setSelected(list[0].name);
+      })
+      .catch(err => setError('Failed to load file list: ' + err.message))
+      .finally(() => setFilesLoading(false));
+  }, []);
+
+  // ----------------------------------------------------------------
+  // Fetch log content whenever selection / lineCount / search changes
+  // ----------------------------------------------------------------
+  const fetchContent = useCallback(() => {
+    if (!selected) return;
+    setLoading(true);
+    setError(null);
+
+    const params = new URLSearchParams({ lines: lineCount });
+    if (searchInput) params.set('search', searchInput);
+
+    fetch(`/api/logs/${encodeURIComponent(selected)}?${params}`)
+      .then(r => r.json())
+      .then(data => {
+        if (data.error) { setError(data.error); setContent(null); return; }
+        setContent(data);
+        setLastRefresh(new Date());
+        // Auto-scroll to bottom only in tail mode (no active search)
+        if (!searchInput && outputRef.current) {
+          requestAnimationFrame(() => {
+            if (outputRef.current) outputRef.current.scrollTop = outputRef.current.scrollHeight;
+          });
+        }
+      })
+      .catch(err => setError('Fetch failed: ' + err.message))
+      .finally(() => setLoading(false));
+  }, [selected, lineCount, searchInput]);
+
+  useEffect(() => { fetchContent(); }, [fetchContent]);
+
+  // ----------------------------------------------------------------
+  // Auto-refresh (30s interval, disabled during search)
+  // ----------------------------------------------------------------
+  useEffect(() => {
+    if (intervalRef.current) clearInterval(intervalRef.current);
+    if (autoRefresh && !searchInput && selected) {
+      intervalRef.current = setInterval(fetchContent, 30000);
+    }
+    return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
+  }, [autoRefresh, searchInput, selected, fetchContent]);
+
+  // ----------------------------------------------------------------
+  // File select handler
+  // ----------------------------------------------------------------
+  const handleSelect = useCallback(name => {
+    setSelected(name);
+    setContent(null);
+    setError(null);
+  }, []);
+
+  // ----------------------------------------------------------------
+  // Helpers
+  // ----------------------------------------------------------------
+  function fmtSize(bytes) {
+    if (bytes == null) return '';
+    if (bytes < 1024) return bytes + 'B';
+    if (bytes < 1048576) return (bytes / 1024).toFixed(1) + 'KB';
+    return (bytes / 1048576).toFixed(1) + 'MB';
+  }
+
+  function fmtAge(iso) {
+    if (!iso) return '';
+    const d = Date.now() - new Date(iso).getTime();
+    const m = Math.floor(d / 60000);
+    if (m < 1) return 'now';
+    if (m < 60) return m + 'm';
+    const h = Math.floor(m / 60);
+    if (h < 24) return h + 'h';
+    return Math.floor(h / 24) + 'd';
+  }
+
+  // Highlight search term in a text line — returns a span with mark tags
+  function HighlightedLine({ text, query }) {
+    if (!query) return React.createElement('span', null, text);
+    const parts = [];
+    const lower = text.toLowerCase();
+    const qLower = query.toLowerCase();
+    let idx = 0;
+    while (idx < text.length) {
+      const found = lower.indexOf(qLower, idx);
+      if (found === -1) { parts.push(text.slice(idx)); break; }
+      if (found > idx) parts.push(text.slice(idx, found));
+      parts.push(React.createElement('mark', { key: found }, text.slice(found, found + query.length)));
+      idx = found + query.length;
+    }
+    return React.createElement('span', null, ...parts);
+  }
+
+  // ----------------------------------------------------------------
+  // Render helpers
+  // ----------------------------------------------------------------
+  function renderSidebar() {
+    return React.createElement('div', { className: 'lv-sidebar' },
+      React.createElement('div', { className: 'lv-sidebar-head' },
+        React.createElement('h3', null, 'Log Files'),
+        filesLoading && React.createElement('div', { className: 'spin' })
+      ),
+      React.createElement('div', { className: 'lv-file-list' },
+        files.length === 0 && !filesLoading
+          ? React.createElement('div', { className: 'empty', style: { padding: '20px 12px' } }, 'No log files found')
+          : files.map(f =>
+              React.createElement('div', {
+                key: f.name,
+                className: 'lv-file' + (f.name === selected ? ' on' : ''),
+                onClick: () => handleSelect(f.name),
+              },
+                React.createElement('div', { className: 'lv-file-name', title: f.name }, f.name),
+                React.createElement('div', { className: 'lv-file-meta' },
+                  React.createElement('span', null, fmtSize(f.sizeBytes)),
+                  React.createElement('span', null, fmtAge(f.modifiedAt))
+                )
+              )
+            )
+      )
+    );
+  }
+
+  function renderToolbar() {
+    return React.createElement('div', { className: 'lv-toolbar' },
+      React.createElement('label', null, 'Lines'),
+      React.createElement('select', {
+        className: 'lv-select',
+        value: lineCount,
+        onChange: e => setLineCount(Number(e.target.value)),
+      },
+        React.createElement('option', { value: 50 }, '50'),
+        React.createElement('option', { value: 100 }, '100'),
+        React.createElement('option', { value: 500 }, '500')
+      ),
+      React.createElement('input', {
+        type: 'text',
+        className: 'lv-search',
+        placeholder: 'Search in log...',
+        value: search,
+        onChange: e => setSearch(e.target.value),
+      }),
+      React.createElement('button', {
+        className: 'lv-toggle' + (autoRefresh ? ' on' : ''),
+        onClick: () => setAutoRefresh(v => !v),
+        title: autoRefresh ? 'Auto-refresh on (every 30s) — click to disable' : 'Auto-refresh off — click to enable',
+      }, autoRefresh ? 'Auto ON' : 'Auto OFF'),
+      React.createElement('button', {
+        className: 'lv-toggle',
+        onClick: fetchContent,
+        disabled: loading || !selected,
+        style: { opacity: loading ? .5 : 1 },
+      }, loading ? '...' : 'Refresh'),
+      lastRefresh && React.createElement('span', { style: { fontSize: 10, color: 'var(--t4)', marginLeft: 4 } },
+        'at ' + lastRefresh.toLocaleTimeString()
+      )
+    );
+  }
+
+  function renderStatus() {
+    if (!content) return null;
+    const isSearch = !!searchInput;
+    let text;
+    if (isSearch) {
+      const { totalMatches, capped } = content;
+      text = `${totalMatches}${capped ? '+' : ''} matches for "${searchInput}"` + (capped ? ' — showing first 500' : '');
+    } else {
+      const { totalLines, truncated, lines } = content;
+      text = truncated
+        ? `Showing last ${lines.length} of ${totalLines} lines`
+        : `${totalLines} lines`;
+    }
+    return React.createElement('div', { className: 'lv-status' },
+      React.createElement('span', null, selected),
+      React.createElement('span', null, text)
+    );
+  }
+
+  function renderOutput() {
+    if (!selected) {
+      return React.createElement('div', { className: 'lv-empty' }, 'Select a log file to view');
+    }
+    if (loading && !content) {
+      return React.createElement('div', { className: 'lv-empty' },
+        React.createElement('div', { className: 'spin', style: { marginRight: 8 } }),
+        'Loading...'
+      );
+    }
+    if (error) {
+      return React.createElement('div', { className: 'lv-output' },
+        React.createElement('div', { className: 'lv-err' }, 'Error: ' + error)
+      );
+    }
+    if (!content) return React.createElement('div', { className: 'lv-empty' }, 'No content');
+
+    const isSearch = !!searchInput;
+    const rows = isSearch ? content.matches : (content.lines || []).map((text, i) => ({
+      lineNumber: (content.totalLines - (content.lines.length - 1 - i)),
+      text,
+    }));
+
+    if (rows.length === 0) {
+      return React.createElement('div', { className: 'lv-empty' },
+        isSearch ? `No matches for "${searchInput}"` : 'File is empty'
+      );
+    }
+
+    return React.createElement('div', {
+      ref: outputRef,
+      className: 'lv-output',
+    },
+      rows.map((row, i) =>
+        React.createElement('div', {
+          key: i,
+          className: 'lv-line' + (isSearch ? ' lv-match' : ''),
+        },
+          React.createElement('span', { className: 'lv-line-num' }, row.lineNumber),
+          React.createElement('span', { className: 'lv-line-text' },
+            React.createElement(HighlightedLine, { text: row.text, query: isSearch ? searchInput : '' })
+          )
+        )
+      )
+    );
+  }
+
+  return React.createElement('div', { className: 'lv' },
+    renderSidebar(),
+    React.createElement('div', { className: 'lv-main' },
+      renderToolbar(),
+      renderStatus(),
+      renderOutput()
+    )
+  );
+}
