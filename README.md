@@ -7,6 +7,9 @@
 
 A persistent configuration layer for Claude Code that adds cross-session memory, slash commands, multi-agent orchestration, and a 3D Mission Control session browser. MCP-native.
 
+![Mission Control — 3D agent office view](docs/mission-control.png)
+<sub>Mission Control: agents as desks in a 3D office, live session metrics, skill rack, and a minimap. Runs at `http://localhost:7337`.</sub>
+
 ## Why
 
 A chat window is not an architecture. Claude Code is, but only if you give it one.
