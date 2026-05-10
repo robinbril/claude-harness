@@ -5365,7 +5365,7 @@ function HomeTab() {
             )}
             {companionVis && (
               <div style={{ marginTop: 14, fontSize: 10, color: 'rgba(255,255,255,.25)', textAlign: 'center' }}>
-                {companionVis.emoji} {companionVis.name} is watching...
+                {companionVis.name} is watching...
               </div>
             )}
           </div>
@@ -5571,7 +5571,7 @@ function HomeTab() {
           </div>
           {companionVis && <div className="lp-tag" style={{ pointerEvents: 'none' }}>
             <div className="lp-tag-inner" style={{ borderColor: (companionVis.glowColor || '#fbbf24') + '88', padding: '2px 6px', background: 'rgba(0,0,0,.5)' }}>
-              <div className="lp-tag-name" style={{ color: companionVis.glowColor || '#fbbf24', fontSize: 10 }}>{companionVis.emoji} Manager</div>
+              <div className="lp-tag-name" style={{ color: companionVis.glowColor || '#fbbf24', fontSize: 10 }}>Manager</div>
               <div className="lp-tag-meta">Lv.{companionVis.level} | {companionVis.xp % 100}/100 XP</div>
             </div>
             <div className="lp-tag-line" />
@@ -5809,7 +5809,7 @@ function HomeTab() {
             <div><div className="lp-sv" style={{ color: '#f87171' }}>{'$' + todayCost.toFixed(2)}</div><div className="lp-sl">Today</div></div>
             {companionVis && <>
               <div style={{ borderLeft: '1px solid rgba(255,255,255,.1)', paddingLeft: 16 }}>
-                <div className="lp-sv">{companionVis.emoji} Lv.{companionVis.level}</div>
+                <div className="lp-sv">Lv.{companionVis.level}</div>
                 <div className="lp-sl" style={{ color: companionVis.glowColor }}>{companionVis.rarity} {companionVis.species}</div>
               </div>
               <div><div className="lp-sv">{companionVis.xp % 100}/100</div><div className="lp-sl">XP</div></div>
