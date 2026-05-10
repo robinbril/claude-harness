@@ -1,6 +1,6 @@
 import { createServer } from 'http'
 import { readFileSync, readdirSync, statSync, existsSync, writeFileSync, mkdirSync, unlinkSync } from 'fs'
-import { join, dirname, basename, extname } from 'path'
+import { join, dirname, basename, extname, delimiter as PATH_SEP } from 'path'
 import { fileURLToPath } from 'url'
 import { homedir, tmpdir } from 'os'
 import { exec, execSync } from 'child_process'
@@ -78,6 +78,79 @@ function readBody(req) {
     req.on('end', () => resolve(Buffer.concat(chunks).toString()))
   })
 }
+
+const IS_WIN = process.platform === 'win32'
+const IS_MAC = process.platform === 'darwin'
+
+function escForOsa(s) {
+  // Escape for AppleScript double-quoted string
+  return String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"')
+}
+
+function escForSingleQuoted(s) {
+  // Escape for use inside single-quoted shell argument
+  return String(s).replace(/'/g, "'\\''")
+}
+
+function openTerminalAt(dir) {
+  if (IS_WIN) {
+    exec(`start wt -d "${dir}"`, (err) => { if (err) exec(`start cmd /K "cd /d ${dir}"`) })
+    return
+  }
+  if (IS_MAC) {
+    exec(`open -a Terminal "${dir}"`)
+    return
+  }
+  exec(`x-terminal-emulator --working-directory="${dir}"`, (err) => {
+    if (err) exec(`gnome-terminal --working-directory="${dir}"`)
+  })
+}
+
+function launchInTerminal(dir, scriptPath) {
+  if (IS_WIN) {
+    const wt = `start wt -d "${dir}" -- powershell -NoExit -ExecutionPolicy Bypass -File "${scriptPath}"`
+    exec(wt, (err) => {
+      if (err) exec(`start powershell -NoExit -ExecutionPolicy Bypass -File "${scriptPath}"`)
+    })
+    return
+  }
+  if (IS_MAC) {
+    try { execSync(`chmod +x "${scriptPath}"`) } catch {}
+    const osaBody = `tell application "Terminal" to do script "cd \\"${escForOsa(dir)}\\" && bash \\"${escForOsa(scriptPath)}\\""\ntell application "Terminal" to activate`
+    exec(`osascript -e '${escForSingleQuoted(osaBody)}'`)
+    return
+  }
+  try { execSync(`chmod +x "${scriptPath}"`) } catch {}
+  exec(`x-terminal-emulator -e bash -c 'cd "${dir}" && bash "${scriptPath}"; exec bash'`, (err) => {
+    if (err) exec(`gnome-terminal -- bash -c 'cd "${dir}" && bash "${scriptPath}"; exec bash'`)
+  })
+}
+
+function buildLauncherScript({ promptFile, launcherFile, sessionId, model, sessionName }) {
+  const modelFlag = model ? ` --model ${model}` : ''
+  const nameFlag = sessionName ? ` --name "${sessionName.replace(/"/g, '\\"')}"` : ''
+  const resumeFlag = sessionId ? ` --resume ${sessionId}` : ''
+  if (IS_WIN) {
+    return [
+      `$promptFile = "${promptFile.replace(/\\/g, '\\\\')}"`,
+      `$prompt = Get-Content -Raw $promptFile`,
+      `& claude${resumeFlag}${modelFlag}${nameFlag} --dangerously-skip-permissions "$prompt"`,
+      `Remove-Item $promptFile -ErrorAction SilentlyContinue`,
+      `Remove-Item "${launcherFile.replace(/\\/g, '\\\\')}" -ErrorAction SilentlyContinue`,
+    ].join('\r\n')
+  }
+  return [
+    `#!/usr/bin/env bash`,
+    `set +e`,
+    `PROMPT="$(cat "${promptFile}")"`,
+    `claude${resumeFlag}${modelFlag}${nameFlag} --dangerously-skip-permissions "$PROMPT"`,
+    `STATUS=$?`,
+    `rm -f "${promptFile}" "${launcherFile}"`,
+    `exit $STATUS`,
+  ].join('\n')
+}
+
+function launcherFileExt() { return IS_WIN ? '.ps1' : '.sh' }
 
 function parseFrontmatter(content) {
   const match = content.match(/^---\s*\n([\s\S]*?)\n---\s*\n([\s\S]*)$/)
@@ -233,9 +306,10 @@ function getHarnessSummary() {
 
 function resolveOpenAIKey() {
   if (process.env.OPENAI_API_KEY) return process.env.OPENAI_API_KEY
-  // Add fallback .env paths here if you want to source OPENAI_API_KEY from
-  // a per-project .env file when the env var is not set.
-  const envPaths = []
+  const envPaths = [
+    join(HOME, 'OneDrive - Fellowmind Netherlands B.V', 'Projects', 'Hive', 'fellowmind.hiveai.demo.ville', '.env'),
+    join(HOME, 'OneDrive - Fellowmind Netherlands B.V', 'Projects', 'Hive', 'fellowmind.hiveai.core', '.env'),
+  ]
   for (const p of envPaths) {
     try {
       const vars = Object.fromEntries(
@@ -541,7 +615,7 @@ const server = createServer(async (req, res) => {
     if (_authCache && now - _authCache.ts < 60000) { jsonResponse(res, _authCache.data); return }
     try {
       const claudeBin = join(HOME, '.local', 'bin', 'claude')
-      const raw = execSync(`"${claudeBin}" auth status`, { encoding: 'utf-8', timeout: 10000, env: { ...process.env, PATH: process.env.PATH + ';' + join(HOME, '.local', 'bin') } })
+      const raw = execSync(`"${claudeBin}" auth status`, { encoding: 'utf-8', timeout: 10000, env: { ...process.env, PATH: process.env.PATH + PATH_SEP + join(HOME, '.local', 'bin') } })
       const data = JSON.parse(raw)
       _authCache = { ts: now, data }
       jsonResponse(res, data)
@@ -633,57 +707,36 @@ Pick relevant tools from: Read, Write, Edit, Bash, Grep, Glob. Write a clear, ac
   // === Terminal actions ===
   if (req.method === 'POST' && url.pathname === '/api/open-terminal') {
     const body = JSON.parse(await readBody(req))
-    const dir = body.path || process.env.USERPROFILE || HOME
-    exec(`start wt -d "${dir}"`, (err) => { if (err) exec(`start cmd /K "cd /d ${dir}"`) })
+    const dir = body.path || process.env.HOME || process.env.USERPROFILE || HOME
+    openTerminalAt(dir)
     jsonResponse(res, { ok: true }); return
   }
 
   if (req.method === 'POST' && url.pathname === '/api/resume-terminal') {
     const body = JSON.parse(await readBody(req))
     const { sessionId, path: p, prompt, model, name: sessionName } = body
-    const dir = p || process.env.USERPROFILE || HOME
+    const dir = p || process.env.HOME || process.env.USERPROFILE || HOME
 
-    if (prompt && sessionId) {
+    if (prompt) {
       const ts = Date.now()
       const promptFile = join(tmpdir(), `mc-prompt-${ts}.md`)
-      const launcherFile = join(tmpdir(), `mc-launch-${ts}.ps1`)
+      const launcherFile = join(tmpdir(), `mc-launch-${ts}${launcherFileExt()}`)
       writeFileSync(promptFile, prompt, 'utf-8')
-      const ps1 = [
-        `$promptFile = "${promptFile.replace(/\\/g, '\\\\')}"`,
-        `$prompt = Get-Content -Raw $promptFile`,
-        `& claude --resume ${sessionId} --yes "$prompt"`,
-        `Remove-Item $promptFile -ErrorAction SilentlyContinue`,
-        `Remove-Item "${launcherFile.replace(/\\/g, '\\\\')}" -ErrorAction SilentlyContinue`,
-      ].join('\r\n')
-      writeFileSync(launcherFile, ps1, 'utf-8')
-      const wtCmd = `start wt -d "${dir}" -- powershell -NoExit -ExecutionPolicy Bypass -File "${launcherFile}"`
-      exec(wtCmd, (err) => {
-        if (err) exec(`start powershell -NoExit -ExecutionPolicy Bypass -Command "cd '${dir}'; ${ps1.split('\r\n').join('; ')}"`)
-      })
-    } else if (prompt) {
-      const ts = Date.now()
-      const promptFile = join(tmpdir(), `mc-prompt-${ts}.md`)
-      const launcherFile = join(tmpdir(), `mc-launch-${ts}.ps1`)
-      writeFileSync(promptFile, prompt, 'utf-8')
-
-      const modelFlag = model ? ` --model ${model}` : ''
-      const nameFlag = sessionName ? ` --name "${sessionName.replace(/"/g, '\\"')}"` : ''
-      const ps1 = [
-        `$promptFile = "${promptFile.replace(/\\/g, '\\\\')}"`,
-        `$prompt = Get-Content -Raw $promptFile`,
-        `& claude${modelFlag}${nameFlag} --yes "$prompt"`,
-        `Remove-Item $promptFile -ErrorAction SilentlyContinue`,
-        `Remove-Item "${launcherFile.replace(/\\/g, '\\\\')}" -ErrorAction SilentlyContinue`,
-      ].join('\r\n')
-      writeFileSync(launcherFile, ps1, 'utf-8')
-
-      const wtCmd = `start wt -d "${dir}" -- powershell -NoExit -ExecutionPolicy Bypass -File "${launcherFile}"`
-      exec(wtCmd, (err) => {
-        if (err) exec(`start powershell -NoExit -ExecutionPolicy Bypass -Command "cd '${dir}'; ${ps1.split('\r\n').join('; ')}"`)
-      })
+      const script = buildLauncherScript({ promptFile, launcherFile, sessionId, model, sessionName })
+      writeFileSync(launcherFile, script, 'utf-8')
+      launchInTerminal(dir, launcherFile)
     } else {
-      const cmd = sessionId ? `claude --resume ${sessionId} --yes` : 'claude --yes'
-      exec(`start wt -d "${dir}" -- cmd /K "${cmd}"`, (err) => { if (err) exec(`start cmd /K "cd /d ${dir} && ${cmd}"`) })
+      const ts = Date.now()
+      const launcherFile = join(tmpdir(), `mc-launch-${ts}${launcherFileExt()}`)
+      const promptFile = join(tmpdir(), `mc-prompt-${ts}.md`)
+      writeFileSync(promptFile, '', 'utf-8')
+      const script = buildLauncherScript({ promptFile, launcherFile, sessionId, model, sessionName })
+      // No prompt: replace the prompt-piping line with a plain claude call
+      const noPromptScript = IS_WIN
+        ? script.replace(/\$prompt = .*\n/, '').replace(/--dangerously-skip-permissions "\$prompt"/, '--dangerously-skip-permissions')
+        : script.replace(/PROMPT=.*\n/, '').replace(/--dangerously-skip-permissions "\$PROMPT"/, '--dangerously-skip-permissions')
+      writeFileSync(launcherFile, noPromptScript, 'utf-8')
+      launchInTerminal(dir, launcherFile)
     }
     jsonResponse(res, { ok: true }); return
   }
@@ -874,9 +927,9 @@ Pick relevant tools from: Read, Write, Edit, Bash, Grep, Glob. Write a clear, ac
     const lessonsText = currentLessons.sections.map(s => `## ${s.title}\n${s.items.map(i => `- **${i.rule}**: ${i.detail}`).join('\n')}`).join('\n\n')
     const memoryText = currentMemory.map(m => `[${m.type}] ${m.name}: ${m.description}`).join('\n')
 
-    const systemPrompt = `You are the Harness Improvement Assistant for the Agentic Development Harness for Claude Code.
+    const systemPrompt = `You are the Harness Improvement Assistant for Robin Bril's Agentic Development Harness for Claude Code.
 
-Your job: analyze input from the user and determine if it should become a new lesson, memory record, rule update, or nothing.
+Your job: analyze input from Robin and determine if it should become a new lesson, memory record, rule update, or nothing.
 
 CURRENT LESSONS (lessons-learned.md):
 ${lessonsText}
@@ -889,7 +942,7 @@ RULES:
 2. If it's genuinely new, propose the exact change as structured output.
 3. Validate: is this actionable, specific, and not too broad?
 4. Never propose duplicate entries.
-5. Respond in the user's language (mirror the input).
+5. Respond in Dutch if Robin writes in Dutch, English if English.
 
 Response format (JSON):
 {

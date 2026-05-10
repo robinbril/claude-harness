@@ -67,45 +67,47 @@ function looksLikeTitle(text) {
 
 function deriveProjectName(projectPath, projectSlug) {
   const raw = projectPath
-    ? projectPath.replace(/\//g, '\\').replace(/\\$/, '')
+    ? projectPath.replace(/[\\\/]+/g, '/').replace(/\/$/, '')
     : decodeSlugToPath(projectSlug)
 
-  const homeMatch = raw.match(/^C:\\Users\\[^\\]+/i)
-  if (!homeMatch) return raw.split('\\').pop() || 'Global'
+  const homeMatch = raw.match(/^[A-Z]:\/Users\/[^\/]+/i)
+    || raw.match(/^\/Users\/[^\/]+/)
+    || raw.match(/^\/home\/[^\/]+/)
+  if (!homeMatch) return raw.split('/').pop() || 'Global'
 
   const homeDir = homeMatch[0]
   if (raw.toLowerCase() === homeDir.toLowerCase()) return 'Global'
 
-  let rest = raw.slice(homeDir.length + 1)
+  let rest = raw.slice(homeDir.length).replace(/^\//, '')
 
-  const hivePfx = rest.match(/^OneDrive[^\\]*\\Projects\\Hive\\?/i)
+  const hivePfx = rest.match(/^OneDrive[^\/]*\/Projects\/Hive\/?/i)
   if (hivePfx) {
-    rest = rest.slice(hivePfx[0].length).replace(/^\\/, '')
+    rest = rest.slice(hivePfx[0].length).replace(/^\//, '')
     if (!rest) return 'Hive'
-    const parts = rest.split('\\').filter(Boolean)
+    const parts = rest.split('/').filter(Boolean)
     const key = parts.find(p => !['workspace', 'src', 'lib', 'app'].includes(p.toLowerCase()))
     return key || parts[0] || 'Hive'
   }
 
-  const projPfx = rest.match(/^OneDrive[^\\]*\\Projects\\?/i)
+  const projPfx = rest.match(/^OneDrive[^\/]*\/Projects\/?/i) || rest.match(/^Projects\/?/i)
   if (projPfx) {
-    rest = rest.slice(projPfx[0].length).replace(/^\\/, '')
+    rest = rest.slice(projPfx[0].length).replace(/^\//, '')
     if (!rest) return 'Projects'
   }
 
-  const dlPfx = rest.match(/^Downloads\\?/i)
+  const dlPfx = rest.match(/^Downloads\/?/i)
   if (dlPfx) {
-    rest = rest.slice(dlPfx[0].length).replace(/^\\/, '')
+    rest = rest.slice(dlPfx[0].length).replace(/^\//, '')
     if (!rest) return 'Downloads'
   }
 
-  const claudePfx = rest.match(/^\.claude\\?/i)
+  const claudePfx = rest.match(/^\.claude\/?/i)
   if (claudePfx) {
-    rest = rest.slice(claudePfx[0].length).replace(/^\\/, '')
+    rest = rest.slice(claudePfx[0].length).replace(/^\//, '')
     if (!rest) return 'Claude Config'
   }
 
-  const parts = rest.split('\\').filter(Boolean)
+  const parts = rest.split('/').filter(Boolean)
   const skip = new Set(['src', 'lib', 'app', 'packages', 'workspace', 'projects'])
   const meaningful = parts.filter(p => !skip.has(p.toLowerCase()))
   if (meaningful.length === 0) return parts[0] || 'Global'
@@ -113,7 +115,11 @@ function deriveProjectName(projectPath, projectSlug) {
 }
 
 function decodeSlugToPath(slug) {
-  return slug.replace(/--/g, ':\\').replace(/-/g, '\\')
+  if (process.platform === 'win32') {
+    return slug.replace(/--/g, ':\\').replace(/-/g, '\\')
+  }
+  // Unix: leading dash represents the absolute root
+  return '/' + slug.replace(/^-+/, '').replace(/-/g, '/')
 }
 
 function deriveTitle(aiTitle, firstUserPrompt, sessionId, qmdDir) {

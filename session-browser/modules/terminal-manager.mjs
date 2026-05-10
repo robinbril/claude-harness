@@ -6,7 +6,7 @@ let nextId = 1
 
 function createTerminal({ prompt, model, name, path, maxTurns, maxBudget, permissionMode, effortLevel }) {
   const id = 't' + nextId++
-  const dir = path || process.env.USERPROFILE || homedir()
+  const dir = path || process.env.HOME || process.env.USERPROFILE || homedir()
 
   const terminal = {
     id,
