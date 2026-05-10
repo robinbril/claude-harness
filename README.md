@@ -1,24 +1,53 @@
 # Agentic Development Harness
 
-A persistent configuration layer for Claude Code that adds memory, specialized agents, automated hooks, and a visual dashboard.
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![Node](https://img.shields.io/badge/node-%3E%3D20-brightgreen)](https://nodejs.org)
+[![MCP](https://img.shields.io/badge/MCP-native-blue)](https://modelcontextprotocol.io)
+[![Cross-platform](https://img.shields.io/badge/macOS%20%7C%20Linux%20%7C%20Windows-supported-lightgrey)]()
+
+A persistent configuration layer for Claude Code that adds cross-session memory, slash commands, multi-agent orchestration, and a 3D Mission Control session browser. MCP-native.
+
+## Why
+
+A chat window is not an architecture. Claude Code is, but only if you give it one.
+
+This harness wires up the things a single prompt can't fix on its own:
+
+- **Memory across sessions.** AgentMemory MCP server with BM25 + graph search. Past decisions, lessons, project context come back automatically via `SessionStart` hooks.
+- **Specialised agents.** 37 subagents with their own models, tools, and prompts. The right one is auto-spawned when its trigger fires.
+- **Skills as playbooks.** 33 domain skills (Azure, docs, frontend, security, testing) load only when their description matches the user's request — no token cost when idle.
+- **Slash commands as workflows.** 17 commands (`/work`, `/attack`, `/recall`, `/ship`, `/audit`) wrap repetitive multi-step processes.
+- **Recursive multi-agent orchestration.** `/attack` runs a planner / worker / verifier loop with worktree isolation for tasks too big for a single context window.
+- **Mission Control.** A web dashboard at `http://localhost:7337` for session history, agent/skill editing, log tail, system health, and a 3D office view.
+- **Hooks that learn.** `SessionEnd` extracts learnings, `PreToolUse` blocks dangerous pushes, `PostToolUse` verifies deploys, `PreCompact` preserves context.
+
+Everything is plain files. No daemons. No build step. Claude Code already loads `~/.claude/` — this just gives that directory a backbone.
 
 ---
 
 ## Quick Start
 
-**Prerequisites:** Node.js >= 20, Docker Desktop, Claude Code CLI
+**Prerequisites:** Node.js >= 20, Docker Desktop (for AgentMemory), [Claude Code CLI](https://docs.anthropic.com/claude-code).
 
 ```sh
-# Install everything
-node import.mjs
+# 1. Clone and install into ~/.claude/
+git clone https://github.com/robinbril/claude-harness.git
+cd claude-harness
+node import.mjs        # copies rules/commands/skills/agents/scripts, merges settings.json + .mcp.json,
+                       # installs @agentmemory/agentmemory globally + session-browser deps,
+                       # auto-adapts hooks (PowerShell <-> bash/osascript) per platform
 
-# Start the memory server
+# 2. Start the memory server (Docker daemon must be running)
 agentmemory --tools all
 
-# Start Mission Control
+# 3. Start Mission Control
 node ~/.claude/scripts/session-browser/server.mjs
 # Open: http://localhost:7337
 ```
+
+Dry-run first: `node import.mjs --dry-run` shows everything that would change without writing.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for adding your own commands, skills, agents, and hooks.
 
 ---
 
