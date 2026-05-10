@@ -645,6 +645,8 @@ nav { background: var(--nav); display: flex; align-items: center; padding: 0 16p
 .term-msg-role { font: 700 10px var(--sans); text-transform: uppercase; letter-spacing: .06em; margin-bottom: 3px }
 .term-msg-role.user { color: #34d399 }
 .term-msg-role.assistant { color: #818cf8 }
+.term-msg-role.system { color: #fbbf24 }
+.term-msg-role.error { color: #ef4444 }
 .term-msg-text { font: 12px/1.6 var(--mono); color: rgba(255,255,255,.75); white-space: pre-wrap; word-break: break-word }
 .term-msg-tool { font: 11px var(--mono); color: rgba(255,255,255,.35); padding: 4px 8px; background: rgba(255,255,255,.03); border-radius: 4px; border-left: 2px solid rgba(99,102,241,.3); margin: 4px 0 }
 .term-msg-tool b { color: rgba(255,255,255,.5); font-weight: 600 }
@@ -2173,6 +2175,10 @@ function TerminalView({ worker: w, workerIdx, sameProject, busEvents, busEventsR
   // Native macOS Terminal window id captured when /api/{open,resume}-terminal returns it.
   // Once set, handleSend pushes chat input into that Terminal window via /api/native-terminal/send.
   const [nativeWindowId, setNativeWindowId] = useState(null);
+  // Local chat log: user input, assistant SSE chunks, and system/error notes — all in one stream.
+  // Replaces the separate Events tab so everything stays in the chat view.
+  const [chatLog, setChatLog] = useState([]);
+  const appendChat = (role, text) => setChatLog(prev => [...prev, { role, text: String(text), ts: Date.now() }]);
 
   const customTitle = workerCustomTitles[w.sessionId || `worker-${workerIdx}`];
   const displayTitle = customTitle || w.title || `Worker ${workerIdx + 1}`;
@@ -2208,6 +2214,11 @@ function TerminalView({ worker: w, workerIdx, sameProject, busEvents, busEventsR
         const chunk = JSON.parse(e.data);
         if (chunk.type === 'connected') return;
         setTermOutput(prev => [...prev, chunk].slice(-200));
+        // Mirror SSE output into the chat log so it shows up next to the user's message.
+        // 'stdin' is already in chatLog from handleSend; 'done' is a no-op marker.
+        if (chunk.type === 'stdout' && chunk.text) appendChat('assistant', chunk.text);
+        else if (chunk.type === 'stderr' && chunk.text) appendChat('error', chunk.text);
+        else if (chunk.type === 'error' && chunk.text) appendChat('error', chunk.text);
         setTimeout(() => { if (bodyRef.current) bodyRef.current.scrollTop = bodyRef.current.scrollHeight; }, 50);
       } catch {}
     };
@@ -2293,37 +2304,39 @@ function TerminalView({ worker: w, workerIdx, sameProject, busEvents, busEventsR
         const localLines = LOCAL_COMMANDS.map(c => `${c.cmd} - ${c.desc}`).join('\n');
         const skillLines = skills.map(s => `/${s.name} - ${s.description || ''}`).join('\n');
         const builtins = '/compact, /config, /cost, /doctor, /init, /login, /logout, /memory, /model, /permissions, /review, /vim';
-        fetch('/api/bus/events', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ agent: 'system', project: projectKey, event: 'help', message: `Local:\n${localLines}\n\nCustom skills (${skills.length}):\n${skillLines}\n\nClaude Code built-in:\n${builtins}\n\nAny other /command or text is forwarded to the active Claude session.` })
-        }).then(() => fetch('/api/bus/events?limit=20').then(r => r.json()).then(evts => { if (Array.isArray(evts)) { busEventsRef.current = evts; setBusEvents(evts); } }));
+        appendChat('system', `Local:\n${localLines}\n\nCustom skills (${skills.length}):\n${skillLines}\n\nClaude Code built-in:\n${builtins}\n\nAny other /command or text is forwarded to the active Claude session.`);
         setMsg('');
-        setTab('bus');
         return;
       }
 
-      if (cmd === '/clear') { setTranscript([]); setMsg(''); return; }
+      if (cmd === '/clear') { setTranscript([]); setChatLog([]); setMsg(''); return; }
       if (cmd === '/status') { loadTranscript(); setMsg(''); return; }
       if (cmd === '/open') {
-        fetch('/api/resume-terminal', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ sessionId: w.sessionId })
-        });
+        const body = w.sessionId ? { sessionId: w.sessionId, path: w.projectPath } : { path: w.projectPath };
+        fetch('/api/resume-terminal', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+          .then(r => r.json())
+          .then(d => { if (d && d.windowId) { setNativeWindowId(d.windowId); appendChat('system', `Native macOS Terminal opened (window #${d.windowId}). Chat input is now mirrored.`); } else appendChat('system', 'Opening native Terminal...'); })
+          .catch(() => appendChat('error', 'Failed to open native Terminal.'));
         setMsg('');
         return;
       }
       if (cmd === '/connect') {
         spawnHeadless();
+        appendChat('system', 'Connecting headless Claude session...');
         setMsg('');
         return;
       }
 
+      // Other slash commands: show user message in chat then forward to active session.
+      appendChat('user', trimmed);
       sendToSession(`${cmd} ${args}`.trim());
-      logEvent('command', `${cmd} ${args}`.trim());
       setMsg('');
       return;
     }
 
+    // Regular message: show in chat immediately, then forward to whichever session is active.
+    appendChat('user', trimmed);
     sendToSession(trimmed);
-    logEvent('message_sent', trimmed.slice(0, 80));
     setMsg('');
   };
 
@@ -2407,65 +2420,30 @@ function TerminalView({ worker: w, workerIdx, sameProject, busEvents, busEventsR
         )}
       </div>
 
-      <div className="term-tabs">
-        <div className={'term-tab' + (tab === 'chat' ? ' on' : '')} onClick={() => setTab('chat')}>Chat</div>
-        <div className={'term-tab' + (tab === 'bus' ? ' on' : '')} onClick={() => setTab('bus')}>Events{projEvents.length > 0 ? ` (${projEvents.length})` : ''}</div>
-      </div>
-
       <div className="term-body" ref={bodyRef}>
-        {tab === 'chat' && (
-          <>
-            {terminalId && termOutput.length > 0 && (
-              <div style={{ borderBottom: '1px solid rgba(99,102,241,.15)', marginBottom: 4, paddingBottom: 4 }}>
-                <div style={{ font: '600 9px var(--sans)', color: '#10b981', padding: '4px 8px', textTransform: 'uppercase', letterSpacing: '.05em' }}>Live Terminal ({terminalId})</div>
-                {termOutput.slice(-40).filter(c => c.type !== 'status').map((chunk, i) => {
-                  const colors = { stderr: '#f59e0b', stdin: '#818cf8', error: '#ef4444', done: '#6b7280' };
-                  const color = colors[chunk.type] || 'rgba(255,255,255,.85)';
-                  let text = '';
-                  if (chunk.type === 'stdin') text = '> ' + chunk.text;
-                  else if (chunk.type === 'done') text = chunk.code === 0 ? '' : `Exit code ${chunk.code}`;
-                  else if (chunk.type === 'error') text = 'Error: ' + chunk.text;
-                  else text = chunk.text || '';
-                  if (!text) return null;
-                  return (
-                    <div key={i} style={{ padding: '2px 8px', font: '11px var(--mono)', color, whiteSpace: 'pre-wrap', wordBreak: 'break-all', opacity: chunk.type === 'stdin' ? .7 : 1 }}>
-                      {text}
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-            {!terminalId && transcript.length > 0 ? transcript.map((m, i) => (
-              <div key={i} className="term-msg">
-                <div className={'term-msg-role ' + m.role}>{m.role}</div>
-                {m.parts.map((p, j) => {
-                  if (p.type === 'text') return <div key={j} className="term-msg-text">{p.text}</div>;
-                  if (p.type === 'tool_use') return <div key={j} className="term-msg-tool"><b>{p.name}</b> {p.input?.slice(0, 200)}</div>;
-                  if (p.type === 'thinking') return <div key={j} className="term-msg-thinking">{p.thinking?.slice(0, 300)}</div>;
-                  return null;
-                })}
-              </div>
-            )) : !terminalId && (
-              <div className="term-empty" style={{ opacity: .4 }}>{loading ? '' : 'Type a message to connect'}</div>
-            )}
-            {loading && !terminalId && <div style={{ textAlign: 'center', padding: '6px 0' }}><span style={{ display: 'inline-block', width: 12, height: 12, border: '2px solid rgba(129,140,248,.3)', borderTopColor: '#818cf8', borderRadius: '50%', animation: 'sp .6s linear infinite' }} /></div>}
-          </>
+        {transcript.map((m, i) => (
+          <div key={'t' + i} className="term-msg">
+            <div className={'term-msg-role ' + m.role}>{m.role}</div>
+            {m.parts.map((p, j) => {
+              if (p.type === 'text') return <div key={j} className="term-msg-text">{p.text}</div>;
+              if (p.type === 'tool_use') return <div key={j} className="term-msg-tool"><b>{p.name}</b> {p.input?.slice(0, 200)}</div>;
+              if (p.type === 'thinking') return <div key={j} className="term-msg-thinking">{p.thinking?.slice(0, 300)}</div>;
+              return null;
+            })}
+          </div>
+        ))}
+        {chatLog.map((m, i) => (
+          <div key={'c' + i} className="term-msg">
+            <div className={'term-msg-role ' + m.role}>{m.role}</div>
+            <div className="term-msg-text">{m.text}</div>
+          </div>
+        ))}
+        {transcript.length === 0 && chatLog.length === 0 && !loading && (
+          <div className="term-empty" style={{ opacity: .4 }}>Type a message to start.</div>
         )}
-
-        {tab === 'bus' && (
-          projEvents.length === 0 ? <div className="term-empty">No events yet.</div> :
-          projEvents.map(e => (
-            <div key={e.id} className="term-bus-item">
-              <div style={{ width: 5, height: 5, borderRadius: 3, background: e.event === 'message_sent' ? '#818cf8' : e.event === 'handoff_sent' ? '#f59e0b' : '#10b981', marginTop: 5, flexShrink: 0 }} />
-              <div style={{ flex: 1 }}>
-                <div className="term-bus-agent">{e.agent}</div>
-                <div className="term-bus-msg">{e.message || e.event}</div>
-                <div className="term-bus-time">{rel(new Date(e.ts).toISOString())}</div>
-              </div>
-            </div>
-          ))
+        {loading && transcript.length === 0 && chatLog.length === 0 && (
+          <div style={{ textAlign: 'center', padding: '6px 0' }}><span style={{ display: 'inline-block', width: 12, height: 12, border: '2px solid rgba(129,140,248,.3)', borderTopColor: '#818cf8', borderRadius: '50%', animation: 'sp .6s linear infinite' }} /></div>
         )}
-
       </div>
 
       <div className="term-input-area">
