@@ -1,0 +1,45 @@
+name: Bug report
+description: Something in the harness misbehaves
+labels: [bug]
+body:
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, shell, Node version, Claude Code version, and anything else relevant.
+      placeholder: |
+        - OS: macOS 15.1
+        - Shell: zsh
+        - Node: v20.11.0
+        - Claude Code: 1.x.x
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Minimal steps so someone else can hit the same bug.
+      placeholder: |
+        1. Clone the repo
+        2. Run `node import.mjs`
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Include error output, logs, or screenshots.
+    validations:
+      required: true
+  - type: textarea
+    id: extra
+    attributes:
+      label: Additional context
+      description: Optional. Anything else worth knowing.
