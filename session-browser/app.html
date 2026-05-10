@@ -2170,6 +2170,9 @@ function TerminalView({ worker: w, workerIdx, sameProject, busEvents, busEventsR
   const [terminalId, setTerminalId] = useState(null);
   const [termOutput, setTermOutput] = useState([]);
   const sseRef = useRef(null);
+  // Native macOS Terminal window id captured when /api/{open,resume}-terminal returns it.
+  // Once set, handleSend pushes chat input into that Terminal window via /api/native-terminal/send.
+  const [nativeWindowId, setNativeWindowId] = useState(null);
 
   const customTitle = workerCustomTitles[w.sessionId || `worker-${workerIdx}`];
   const displayTitle = customTitle || w.title || `Worker ${workerIdx + 1}`;
@@ -2240,6 +2243,14 @@ function TerminalView({ worker: w, workerIdx, sameProject, busEvents, busEventsR
   ];
 
   const sendToSession = (text) => {
+    // Option B: mirror chat input into the macOS Terminal window if one is connected.
+    // Fire-and-forget; failure (e.g. window closed) clears the mirror so the user sees the badge disappear.
+    if (nativeWindowId) {
+      fetch('/api/native-terminal/send', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ windowId: nativeWindowId, text })
+      }).then(r => { if (!r.ok) setNativeWindowId(null); }).catch(() => setNativeWindowId(null));
+    }
+    // Option A: also send to the headless in-panel session so output streams back into the chat.
     if (terminalId) {
       fetch('/api/terminal/send', { method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ terminalId, message: text })
@@ -2380,8 +2391,20 @@ function TerminalView({ worker: w, workerIdx, sameProject, busEvents, busEventsR
         )}
         <button style={{ padding: '6px 16px', borderRadius: 8, border: 'none', background: 'linear-gradient(135deg, #5B5FE6, #818cf8)', color: '#fff', font: '600 11px var(--sans)', cursor: 'pointer', letterSpacing: '.01em', boxShadow: '0 2px 8px rgba(99,102,241,.3)' }}
           onClick={() => {
-            if (w.sessionId) fetch('/api/resume-terminal', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sessionId: w.sessionId }) });
+            const body = w.sessionId ? { sessionId: w.sessionId, path: w.projectPath } : { path: w.projectPath };
+            fetch('/api/resume-terminal', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+              .then(r => r.json())
+              .then(d => { if (d && d.windowId) setNativeWindowId(d.windowId); })
+              .catch(() => {});
           }}>Open Terminal</button>
+        {nativeWindowId && (
+          <span title="macOS Terminal connected. Chat input is mirrored to this window."
+            style={{ marginLeft: 6, padding: '4px 8px', borderRadius: 6, background: 'rgba(16,185,129,.12)', color: '#10b981', font: '600 10px var(--mono)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+            <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#10b981' }} /> macOS Terminal #{nativeWindowId}
+            <button onClick={() => setNativeWindowId(null)} title="Stop mirroring to macOS Terminal"
+              style={{ marginLeft: 4, background: 'transparent', border: 'none', color: '#10b981', cursor: 'pointer', font: '600 12px var(--mono)', padding: 0, lineHeight: 1 }}>×</button>
+          </span>
+        )}
       </div>
 
       <div className="term-tabs">

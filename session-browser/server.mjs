@@ -92,18 +92,41 @@ function escForSingleQuoted(s) {
   return String(s).replace(/'/g, "'\\''")
 }
 
+function runOsascript(src) {
+  // Run a multi-line AppleScript via a tmp .scpt file. Returns trimmed stdout
+  // or null on failure. Used to capture window IDs / send text into existing
+  // Terminal windows.
+  if (!IS_MAC) return null
+  const scptPath = join(tmpdir(), `mc-osa-${Date.now()}-${Math.random().toString(36).slice(2)}.scpt`)
+  try {
+    writeFileSync(scptPath, src, 'utf-8')
+    const out = execSync(`osascript "${scptPath}"`, { encoding: 'utf-8', timeout: 5000 })
+    return out.trim()
+  } catch (e) {
+    return null
+  } finally {
+    try { unlinkSync(scptPath) } catch {}
+  }
+}
+
 function openTerminalAt(dir) {
   if (IS_WIN) {
     exec(`start wt -d "${dir}"`, (err) => { if (err) exec(`start cmd /K "cd /d ${dir}"`) })
-    return
+    return null
   }
   if (IS_MAC) {
-    exec(`open -a Terminal "${dir}"`)
-    return
+    const out = runOsascript(`tell application "Terminal"
+  activate
+  do script "cd \\"${escForOsa(dir)}\\""
+  return id of front window as text
+end tell`)
+    const wid = out ? parseInt(out, 10) : NaN
+    return Number.isFinite(wid) ? wid : null
   }
   exec(`x-terminal-emulator --working-directory="${dir}"`, (err) => {
     if (err) exec(`gnome-terminal --working-directory="${dir}"`)
   })
+  return null
 }
 
 function launchInTerminal(dir, scriptPath) {
@@ -112,18 +135,42 @@ function launchInTerminal(dir, scriptPath) {
     exec(wt, (err) => {
       if (err) exec(`start powershell -NoExit -ExecutionPolicy Bypass -File "${scriptPath}"`)
     })
-    return
+    return null
   }
   if (IS_MAC) {
     try { execSync(`chmod +x "${scriptPath}"`) } catch {}
-    const osaBody = `tell application "Terminal" to do script "cd \\"${escForOsa(dir)}\\" && bash \\"${escForOsa(scriptPath)}\\""\ntell application "Terminal" to activate`
-    exec(`osascript -e '${escForSingleQuoted(osaBody)}'`)
-    return
+    const out = runOsascript(`tell application "Terminal"
+  activate
+  do script "cd \\"${escForOsa(dir)}\\" && bash \\"${escForOsa(scriptPath)}\\""
+  return id of front window as text
+end tell`)
+    const wid = out ? parseInt(out, 10) : NaN
+    return Number.isFinite(wid) ? wid : null
   }
   try { execSync(`chmod +x "${scriptPath}"`) } catch {}
   exec(`x-terminal-emulator -e bash -c 'cd "${dir}" && bash "${scriptPath}"; exec bash'`, (err) => {
     if (err) exec(`gnome-terminal -- bash -c 'cd "${dir}" && bash "${scriptPath}"; exec bash'`)
   })
+  return null
+}
+
+function nativeTerminalSend(windowId, text) {
+  if (!IS_MAC) return { ok: false, error: 'native-terminal/send is macOS-only' }
+  const wid = parseInt(windowId, 10)
+  if (!Number.isFinite(wid)) return { ok: false, error: 'invalid windowId' }
+  const txtPath = join(tmpdir(), `mc-input-${Date.now()}-${Math.random().toString(36).slice(2)}.txt`)
+  try {
+    writeFileSync(txtPath, String(text), 'utf-8')
+    const out = runOsascript(`set theText to (read POSIX file "${escForOsa(txtPath)}" as «class utf8»)
+tell application "Terminal"
+  do script theText in window id ${wid}
+end tell
+return "ok"`)
+    if (out === 'ok') return { ok: true }
+    return { ok: false, error: 'osascript failed (window may be closed)' }
+  } finally {
+    try { unlinkSync(txtPath) } catch {}
+  }
 }
 
 function buildLauncherScript({ promptFile, launcherFile, sessionId, model, sessionName }) {
@@ -708,8 +755,8 @@ Pick relevant tools from: Read, Write, Edit, Bash, Grep, Glob. Write a clear, ac
   if (req.method === 'POST' && url.pathname === '/api/open-terminal') {
     const body = JSON.parse(await readBody(req))
     const dir = body.path || process.env.HOME || process.env.USERPROFILE || HOME
-    openTerminalAt(dir)
-    jsonResponse(res, { ok: true }); return
+    const windowId = openTerminalAt(dir)
+    jsonResponse(res, { ok: true, windowId }); return
   }
 
   if (req.method === 'POST' && url.pathname === '/api/resume-terminal') {
@@ -717,6 +764,7 @@ Pick relevant tools from: Read, Write, Edit, Bash, Grep, Glob. Write a clear, ac
     const { sessionId, path: p, prompt, model, name: sessionName } = body
     const dir = p || process.env.HOME || process.env.USERPROFILE || HOME
 
+    let windowId = null
     if (prompt) {
       const ts = Date.now()
       const promptFile = join(tmpdir(), `mc-prompt-${ts}.md`)
@@ -724,7 +772,7 @@ Pick relevant tools from: Read, Write, Edit, Bash, Grep, Glob. Write a clear, ac
       writeFileSync(promptFile, prompt, 'utf-8')
       const script = buildLauncherScript({ promptFile, launcherFile, sessionId, model, sessionName })
       writeFileSync(launcherFile, script, 'utf-8')
-      launchInTerminal(dir, launcherFile)
+      windowId = launchInTerminal(dir, launcherFile)
     } else {
       const ts = Date.now()
       const launcherFile = join(tmpdir(), `mc-launch-${ts}${launcherFileExt()}`)
@@ -736,9 +784,18 @@ Pick relevant tools from: Read, Write, Edit, Bash, Grep, Glob. Write a clear, ac
         ? script.replace(/\$prompt = .*\n/, '').replace(/--dangerously-skip-permissions "\$prompt"/, '--dangerously-skip-permissions')
         : script.replace(/PROMPT=.*\n/, '').replace(/--dangerously-skip-permissions "\$PROMPT"/, '--dangerously-skip-permissions')
       writeFileSync(launcherFile, noPromptScript, 'utf-8')
-      launchInTerminal(dir, launcherFile)
+      windowId = launchInTerminal(dir, launcherFile)
     }
-    jsonResponse(res, { ok: true }); return
+    jsonResponse(res, { ok: true, windowId }); return
+  }
+
+  // Send text into an existing native macOS Terminal window (the chat -> Terminal sync).
+  // Body: { windowId: <number>, text: <string> }
+  if (req.method === 'POST' && url.pathname === '/api/native-terminal/send') {
+    const body = JSON.parse(await readBody(req))
+    const result = nativeTerminalSend(body.windowId, body.text || '')
+    jsonResponse(res, result, result.ok ? 200 : 400)
+    return
   }
 
   // === Headless terminal API ===
