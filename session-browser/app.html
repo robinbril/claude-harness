@@ -2492,6 +2492,7 @@ function HomeTab() {
   const [clickedAgentIdx, setClickedAgentIdx] = useState(null);
   const [activeWorkers, setActiveWorkers] = useState([]);
   const [clickedWorkerIdx, setClickedWorkerIdx] = useState(null);
+  const [emptyDeskPath, setEmptyDeskPath] = useState(null);
   const [multiTermMode, setMultiTermMode] = useState(false);
   const [multiTermWorkers, setMultiTermWorkers] = useState([]);
   const [agentGraph, setAgentGraph] = useState(null);
@@ -4057,8 +4058,10 @@ function HomeTab() {
               ``,
               `Start by asking what task to coordinate, then break it into parallel sub-tasks for your team.`,
             ].join('\n');
+            const targetWorker = activeWorkersRef.current[slot];
+            const targetPath = targetWorker?.projectPath || undefined;
             fetch('/api/resume-terminal', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ prompt: coordPrompt, model: 'claude-sonnet-4-6', name: orch.short || orch.name })
+              body: JSON.stringify({ prompt: coordPrompt, model: 'claude-sonnet-4-6', name: orch.short || orch.name, path: targetPath })
             });
             fetch('/api/bus/events', { method: 'POST', headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ agent: orch.short || orch.name, project: '', event: 'deployed_to_desk', message: `${orch.name} deployed in collab mode to desk ${slot + 1}` })
@@ -5908,8 +5911,10 @@ function HomeTab() {
                         onClick={(e) => {
                           e.stopPropagation();
                           const slot = [0,1,2,3,4,5,6,7].find(si => si >= activeWorkers.length);
+                          const targetWorker = slot !== undefined ? activeWorkers[slot] : null;
+                          const targetPath = targetWorker?.projectPath || undefined;
                           fetch('/api/resume-terminal', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ prompt: `You are the ${a.name} agent from the ${orch.name} orchestrator. Follow your agent definition precisely.`, model: a.model || 'claude-sonnet-4-6', name: a.name })
+                            body: JSON.stringify({ prompt: `You are the ${a.name} agent from the ${orch.name} orchestrator. Follow your agent definition precisely.`, model: a.model || 'claude-sonnet-4-6', name: a.name, path: targetPath })
                           });
                           fetch('/api/bus/events', { method: 'POST', headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({ agent: a.name, project: '', event: 'deployed_to_desk', message: `${a.name} sent to desk ${slot !== undefined ? slot + 1 : '?'}` })
@@ -5987,8 +5992,10 @@ function HomeTab() {
                         ``,
                         `Start by asking what task to coordinate, then break it into parallel sub-tasks.`,
                       ].join('\n');
+                      const targetWorker = activeWorkers[slot];
+                      const targetPath = targetWorker?.projectPath || undefined;
                       fetch('/api/resume-terminal', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ prompt: coordP, model: 'claude-sonnet-4-6', name: orch.short || orch.name })
+                        body: JSON.stringify({ prompt: coordP, model: 'claude-sonnet-4-6', name: orch.short || orch.name, path: targetPath })
                       });
                       fetch('/api/bus/events', { method: 'POST', headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ agent: orch.short || orch.name, project: '', event: 'deployed_to_desk', message: `${orch.name} deployed to desk ${slot + 1}` })
@@ -6286,6 +6293,67 @@ function HomeTab() {
           <div className="panel-resize-handle" onMouseDown={termPanel.onResizeStart} onTouchStart={termPanel.onResizeStart} />
         </div>
       )}
+
+      {clickedWorkerIdx !== null && !activeWorkers[clickedWorkerIdx] && (() => {
+        const slot = clickedWorkerIdx;
+        const sessionProjects = (() => {
+          const seen = new Map();
+          for (const s of sessions || []) {
+            if (s.projectPath && !seen.has(s.projectPath)) {
+              seen.set(s.projectPath, s.projectName || s.projectPath);
+            }
+          }
+          return Array.from(seen, ([path, name]) => ({ path, name }));
+        })();
+        const defaultPath = sessionProjects[0]?.path || '';
+        const pickedPath = emptyDeskPath ?? defaultPath;
+        const openHere = () => {
+          fetch('/api/open-terminal', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path: pickedPath || undefined })
+          });
+          const aid = Date.now() + '-open';
+          setAlerts(prev => [...prev, { id: aid, worker: 'Terminal', workerIdx: slot, text: `Opened terminal at desk ${slot + 1}`, ts: Date.now() }]);
+          setTimeout(() => setAlerts(prev => prev.filter(x => x.id !== aid)), 5000);
+          setClickedWorkerIdx(null);
+        };
+        const startClaude = () => {
+          fetch('/api/resume-terminal', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path: pickedPath || undefined })
+          });
+          const aid = Date.now() + '-claude';
+          setAlerts(prev => [...prev, { id: aid, worker: 'Claude', workerIdx: slot, text: `Starting Claude at desk ${slot + 1}`, ts: Date.now() }]);
+          setTimeout(() => setAlerts(prev => prev.filter(x => x.id !== aid)), 5000);
+          setClickedWorkerIdx(null);
+        };
+        return (
+          <div className="agent-detail" onClick={e => e.stopPropagation()}>
+            <div className="ad-header">
+              <div className="ad-name-row">
+                <div className="ad-name-input" style={{ background: 'none', border: 'none', color: '#a5b4fc', fontWeight: 700 }}>Empty desk {slot + 1}</div>
+                <button className="ad-close" onClick={() => setClickedWorkerIdx(null)}>x</button>
+              </div>
+              <div style={{ font: '11px var(--sans)', color: 'rgba(255,255,255,.45)', marginBottom: 4 }}>Open a new Mac Terminal here or kick off a fresh Claude session.</div>
+            </div>
+            <div className="ad-body">
+              <div className="ad-section">
+                <div className="ad-section-title">Working directory</div>
+                {sessionProjects.length > 0 ? (
+                  <select value={pickedPath} onChange={e => setEmptyDeskPath(e.target.value)}
+                    style={{ width: '100%', padding: '6px 10px', borderRadius: 8, background: 'rgba(255,255,255,.06)', border: '1px solid rgba(255,255,255,.1)', color: '#fff', font: '11px var(--sans)', outline: 'none' }}>
+                    {sessionProjects.map(p => <option key={p.path} value={p.path} style={{ background: '#181828' }}>{p.name} — {p.path}</option>)}
+                  </select>
+                ) : (
+                  <div style={{ font: '11px var(--mono)', color: 'rgba(255,255,255,.4)' }}>Home directory (no projects discovered)</div>
+                )}
+              </div>
+            </div>
+            <div className="ad-footer" style={{ gap: 6 }}>
+              <button className="ad-btn ad-btn-secondary" style={{ flex: 1 }} onClick={openHere}>Open Terminal here</button>
+              <button className="ad-btn ad-btn-primary" style={{ flex: 1 }} onClick={startClaude}>Start Claude session</button>
+            </div>
+          </div>
+        );
+      })()}
 
       {fullscreenWorkerIdx !== null && activeWorkers[fullscreenWorkerIdx] && (
         <div className="fs-terminal-overlay" onClick={(e) => { if (e.target === e.currentTarget) setFullscreenWorkerIdx(null); }}>
